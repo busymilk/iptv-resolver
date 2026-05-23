@@ -600,11 +600,18 @@ def process_source(source_cfg, global_cfg):
     logging.info(f"成功测速排序并保留频道链接: {resolved_count} 个")
     logging.info(f"结果已成功输出到: {output_path}\n")
 
+last_update_time_str = "暂无记录"
+next_update_time_str = "暂无记录"
+
 # Web 接口业务逻辑处理 Handler
 class WebConfigHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         # 默认提供项目 Downloads 目录下的静态网页文件服务
         super().__init__(*args, directory=".", **kwargs)
+
+    def log_message(self, format, *args):
+        # 重写以彻底屏蔽高频轮询的 HTTP 访问日志，防止其污染和淹没系统的真实运行日志
+        pass
 
     def end_headers(self):
         # 允许跨域以便 AJAX 调用更顺畅
@@ -634,7 +641,7 @@ class WebConfigHandler(SimpleHTTPRequestHandler):
             self.wfile.write(json.dumps(global_config, ensure_ascii=False, indent=2).encode('utf-8'))
             return
             
-        # API 2: 获取当前系统状态
+        # API 2: 获取当前系统状态及解析时间提示
         if self.path == "/api/status":
             self.send_response(200)
             self.send_header('Content-Type', 'application/json; charset=utf-8')
@@ -642,9 +649,31 @@ class WebConfigHandler(SimpleHTTPRequestHandler):
             status_data = {
                 "is_updating": is_updating_flag,
                 "current_time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
-                "config_loaded": bool(global_config)
+                "config_loaded": bool(global_config),
+                "last_update_time": last_update_time_str,
+                "next_update_time": next_update_time_str
             }
             self.wfile.write(json.dumps(status_data).encode('utf-8'))
+            return
+
+        # API 5: 实时获取最新系统日志
+        if self.path == "/api/logs":
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain; charset=utf-8')
+            self.end_headers()
+            log_content = ""
+            log_file_path = os.path.join("output", "resolver.log")
+            if os.path.exists(log_file_path):
+                try:
+                    with open(log_file_path, "r", encoding="utf-8") as lf:
+                        lines = lf.readlines()
+                        # 读取最近 150 行以防止前端数据量过大
+                        log_content = "".join(lines[-150:])
+                except Exception as e:
+                    log_content = f"读取日志文件失败: {e}"
+            else:
+                log_content = "暂无系统运行日志记录。"
+            self.wfile.write(log_content.encode('utf-8'))
             return
 
         # 其他静态文件，回退到标准处理器
@@ -748,6 +777,18 @@ def run_once(config_path):
             process_source(src, cfg)
         except Exception as e:
             logging.error(f"处理数据源 {src.get('name')} 时发生未捕获异常: {e}")
+            
+    # 计算并更新最近及下次执行时间
+    global last_update_time_str, next_update_time_str
+    now = time.time()
+    last_update_time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now))
+    
+    interval = cfg.get("update_interval_hours", 0)
+    if interval > 0:
+        next_time = now + interval * 3600
+        next_update_time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(next_time))
+    else:
+        next_update_time_str = "单次手动运行，不自动更新"
 
 def main():
     parser = argparse.ArgumentParser(description="IPTV 智能域名解析与自动更新工具")
