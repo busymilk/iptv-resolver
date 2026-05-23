@@ -798,7 +798,8 @@
                 const res = await response.json();
                 if (response.ok && res.status === 'success') {
                     showToast(res.message);
-                    loadConfig(); // 刷新渲染
+                    loadConfig(); // 刷新配置渲染
+                    fetchStatus(); // 立即刷新状态与预估更新时间
                 } else {
                     showToast(res.message || "修改配置失败！", true);
                 }
@@ -826,6 +827,8 @@
                                 clearInterval(intervalId);
                                 overlay.classList.remove('active');
                                 showToast("🎉 全套多源网速重排序解析更新已圆满完成！");
+                                fetchStatus(); // 立即更新时钟提示
+                                fetchLogs();   // 立即拉取并填充最新日志
                             }
                         }
                     }, 1000);
