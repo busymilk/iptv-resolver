@@ -1,0 +1,13 @@
+# Python 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 运行时输出 (包含您个人解析后的播放列表，极力推荐不要上传到公网)
+output/
+test_list.txt
+temp_out.m3u
+
+# 操作系统属性文件
+.DS_Store
+Thumbs.db

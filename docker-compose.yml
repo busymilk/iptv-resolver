@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  iptv-resolver:
+    build: .
+    container_name: iptv-resolver
+    restart: unless-stopped
+    volumes:
+      - ./config.json:/app/config.json
+      - ./output:/app/output
+    environment:
+      - TZ=Asia/Shanghai
+      - PYTHONUNBUFFERED=1
