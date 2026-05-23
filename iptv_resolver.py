@@ -71,16 +71,19 @@ except ImportError:
 GLOBAL_CONFIG_PATH = "config.json"
 global_config = {}
 is_updating_flag = False  # 用于防止并发重复触发解析更新
+config_lock = threading.Lock()  # 用于配置文件读写的线程锁
+update_lock = threading.Lock()  # 用于解析更新任务的互斥锁
 
 def load_global_config():
     global global_config
-    if os.path.exists(GLOBAL_CONFIG_PATH):
-        try:
-            with open(GLOBAL_CONFIG_PATH, "r", encoding="utf-8") as f:
-                global_config = json.load(f)
-            logging.info("全局配置加载/重载成功！")
-        except Exception as e:
-            logging.error(f"加载全局配置失败: {e}")
+    with config_lock:
+        if os.path.exists(GLOBAL_CONFIG_PATH):
+            try:
+                with open(GLOBAL_CONFIG_PATH, "r", encoding="utf-8") as f:
+                    global_config = json.load(f)
+                logging.info("全局配置加载/重载成功！")
+            except Exception as e:
+                logging.error(f"加载全局配置失败: {e}")
 
 load_global_config()
 
@@ -637,7 +640,7 @@ class WebConfigHandler(SimpleHTTPRequestHandler):
             self.send_response(200)
             self.send_header('Content-Type', 'application/json; charset=utf-8')
             self.end_headers()
-            load_global_config()
+            # 不再重复调用 load_global_config() 读磁盘与打日志，直接返回已热重载的内存变量
             self.wfile.write(json.dumps(global_config, ensure_ascii=False, indent=2).encode('utf-8'))
             return
             
@@ -687,12 +690,28 @@ class WebConfigHandler(SimpleHTTPRequestHandler):
             try:
                 new_cfg = json.loads(post_data.decode('utf-8'))
                 
-                # 写入 config.json 配置文件
-                with open(GLOBAL_CONFIG_PATH, "w", encoding="utf-8") as f:
-                    json.dump(new_cfg, f, ensure_ascii=False, indent=2)
+                # 使用全局配置锁，安全写入 config.json 配置文件，防止读写冲突
+                with config_lock:
+                    with open(GLOBAL_CONFIG_PATH, "w", encoding="utf-8") as f:
+                        json.dump(new_cfg, f, ensure_ascii=False, indent=2)
                     
                 # 重新加载内存中的全局变量
                 load_global_config()
+                
+                # 动态刷新 Web 端的 next_update_time_str，使其立即响应更新周期的改变
+                global next_update_time_str
+                try:
+                    if last_update_time_str != "暂无记录":
+                        last_time_struct = time.strptime(last_update_time_str, "%Y-%m-%d %H:%M:%S")
+                        last_timestamp = time.mktime(last_time_struct)
+                        new_interval = global_config.get("update_interval_hours", 0)
+                        if new_interval > 0:
+                            new_next_time = last_timestamp + new_interval * 3600
+                            next_update_time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(new_next_time))
+                        else:
+                            next_update_time_str = "单次手动运行，不自动更新"
+                except Exception as e:
+                    logging.error(f"热重载计算下次更新时间失败: {e}")
                 
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
@@ -756,39 +775,55 @@ def start_web_server(port, directory="output"):
 
 def run_once(config_path):
     """单次运行流程"""
-    if not os.path.exists(config_path):
-        logging.error(f"配置文件未找到: {config_path}")
-        sys.exit(1)
-        
-    try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            cfg = json.load(f)
-    except Exception as e:
-        logging.error(f"读取配置文件失败: {e}")
-        sys.exit(1)
-        
-    sources = cfg.get("sources", [])
-    if not sources:
-        logging.warning("配置文件中未定义任何 IPTV 数据源。")
-        return
-        
-    for src in sources:
-        try:
-            process_source(src, cfg)
-        except Exception as e:
-            logging.error(f"处理数据源 {src.get('name')} 时发生未捕获异常: {e}")
-            
-    # 计算并更新最近及下次执行时间
-    global last_update_time_str, next_update_time_str
-    now = time.time()
-    last_update_time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now))
+    global is_updating_flag, last_update_time_str, next_update_time_str
     
-    interval = cfg.get("update_interval_hours", 0)
-    if interval > 0:
-        next_time = now + interval * 3600
-        next_update_time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(next_time))
-    else:
-        next_update_time_str = "单次手动运行，不自动更新"
+    # 互斥锁确保同一时间只有一个线程在执行 run_once，避免网络冲突或输出文件写冲突
+    acquired = update_lock.acquire(blocking=False)
+    if not acquired:
+        logging.warning("当前已有更新任务在后台运行中，跳过本次触发。")
+        return False
+        
+    is_updating_flag = True
+    try:
+        if not os.path.exists(config_path):
+            logging.error(f"配置文件未找到: {config_path}")
+            sys.exit(1)
+            
+        # 用配置读写锁包裹，防止在读取配置时发生 Web 并发写入冲突
+        with config_lock:
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+            except Exception as e:
+                logging.error(f"读取配置文件失败: {e}")
+                sys.exit(1)
+                
+        sources = cfg.get("sources", [])
+        if not sources:
+            logging.warning("配置文件中未定义任何 IPTV 数据源。")
+            return True
+            
+        for src in sources:
+            try:
+                process_source(src, cfg)
+            except Exception as e:
+                logging.error(f"处理数据源 {src.get('name')} 时发生未捕获异常: {e}")
+                
+        # 计算并更新最近及下次执行时间
+        now = time.time()
+        last_update_time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now))
+        
+        interval = cfg.get("update_interval_hours", 0)
+        if interval > 0:
+            next_time = now + interval * 3600
+            next_update_time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(next_time))
+        else:
+            next_update_time_str = "单次手动运行，不自动更新"
+            
+        return True
+    finally:
+        is_updating_flag = False
+        update_lock.release()
 
 def main():
     parser = argparse.ArgumentParser(description="IPTV 智能域名解析与自动更新工具")
@@ -806,22 +841,30 @@ def main():
     def resolver_daemon():
         logging.info("IPTV 域名解析、多 IP 优选与同名重排序后台任务启动...")
         # 立即执行初次解析
+        last_run_time = time.time()
         try:
             run_once(GLOBAL_CONFIG_PATH)
+            last_run_time = time.time()
         except Exception as e:
             logging.error(f"初次解析执行失败: {e}")
             
-        if interval > 0:
-            logging.info(f"后台更新线程已进入常驻守护进程模式。每 {interval} 小时自动更新与测速排序一次...")
-            try:
-                while True:
-                    time.sleep(interval * 3600)
+        logging.info("后台更新线程已进入常驻守护进程模式，准备接收定时任务。")
+        try:
+            while True:
+                # 每次睡眠 10 秒，动态感应最新配置的定时周期
+                time.sleep(10)
+                
+                curr_interval = global_config.get("update_interval_hours", 0)
+                if curr_interval <= 0:
+                    continue
+                    
+                now = time.time()
+                if now - last_run_time >= curr_interval * 3600:
                     logging.info("定时更新触发，开始新一轮解析与同名重排流程...")
-                    run_once(GLOBAL_CONFIG_PATH)
-            except KeyboardInterrupt:
-                pass
-        else:
-            logging.info("单次解析与同名重排任务完毕。")
+                    if run_once(GLOBAL_CONFIG_PATH):
+                        last_run_time = time.time()
+        except KeyboardInterrupt:
+            pass
 
     # 只要启用了 Web 服务，不论是否常驻，我们都立即在后台启动解析线程，而让 Web 服务器启动挂起
     if web_port > 0:
@@ -838,15 +881,23 @@ def main():
     else:
         # 如果彻底关闭了 Web 服务（web_port == 0）
         logging.info("由于未启用 Web 服务，将在主线程同步执行解析与测速任务...")
-        if interval > 0:
-            logging.info(f"进入常驻守护进程模式。每 {interval} 小时自动更新与测速排序一次...")
+        if interval > 0 or global_config.get("update_interval_hours", 0) > 0:
+            logging.info("进入常驻守护进程模式，准备接收定时任务。")
             try:
                 # 初次运行
+                last_run_time = time.time()
                 run_once(GLOBAL_CONFIG_PATH)
+                last_run_time = time.time()
                 while True:
-                    time.sleep(interval * 3600)
-                    logging.info("定时更新触发，开始新一轮解析与同名重排流程...")
-                    run_once(GLOBAL_CONFIG_PATH)
+                    time.sleep(10)
+                    curr_interval = global_config.get("update_interval_hours", 0)
+                    if curr_interval <= 0:
+                        continue
+                    now = time.time()
+                    if now - last_run_time >= curr_interval * 3600:
+                        logging.info("定时更新触发，开始新一轮解析与同名重排流程...")
+                        if run_once(GLOBAL_CONFIG_PATH):
+                            last_run_time = time.time()
             except KeyboardInterrupt:
                 logging.info("服务被用户手动终止。")
         else:
