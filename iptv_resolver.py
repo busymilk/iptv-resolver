@@ -13,7 +13,7 @@ import subprocess
 import ipaddress
 import socketserver
 from http.server import SimpleHTTPRequestHandler
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse, urlunparse, parse_qs
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # 自动补齐依赖的机制
@@ -54,6 +54,23 @@ try:
     import dns.resolver
 except ImportError:
     pass
+
+# 全局变量以支持 Web 动态热重载
+GLOBAL_CONFIG_PATH = "config.json"
+global_config = {}
+is_updating_flag = False  # 用于防止并发重复触发解析更新
+
+def load_global_config():
+    global global_config
+    if os.path.exists(GLOBAL_CONFIG_PATH):
+        try:
+            with open(GLOBAL_CONFIG_PATH, "r", encoding="utf-8") as f:
+                global_config = json.load(f)
+            logging.info("全局配置加载/重载成功！")
+        except Exception as e:
+            logging.error(f"加载全局配置失败: {e}")
+
+load_global_config()
 
 def is_ip(host):
     """判断给定的 host 是否已经是 IP 地址（支持 IPv4 和带中括号的 IPv6）"""
@@ -190,14 +207,14 @@ def resolve_and_select_best(domain_key, dns_servers, mode, use_doh, do_speed_tes
     """
     并发解析域名，并通过连接测速，在解析到的多个 IP 中选出延迟最小、最稳定的最优 IP。
     domain_key: (domain, port, scheme)
-    返回: (best_ip, ip_type)
+    返回: (best_ip, ip_type, best_time)
     """
     domain, port, scheme = domain_key
     
     # 1. 域名解析获取所有 IP 候选列表
     ips_v6, ips_v4 = resolve_domain_all(domain, dns_servers, mode, use_doh)
     if not ips_v6 and not ips_v4:
-        return None, None
+        return None, None, float('inf')
         
     # 2. 确认测速端口
     test_port = port if port else (443 if scheme == 'https' else 80)
@@ -210,8 +227,7 @@ def resolve_and_select_best(domain_key, dns_servers, mode, use_doh, do_speed_tes
     
     # A. 优先尝试 IPv6
     if mode in ["prefer-ipv6", "ipv6-only"] and ips_v6:
-        if do_speed_test and len(ips_v6) > 1:
-            logging.debug(f"对域名 {domain} 拥有的 {len(ips_v6)} 个 IPv6 地址发起连接测速优选...")
+        if do_speed_test and len(ips_v6) > 0:
             for ip in ips_v6:
                 cost = test_ip_speed(ip, test_port)
                 if cost < best_time:
@@ -224,11 +240,8 @@ def resolve_and_select_best(domain_key, dns_servers, mode, use_doh, do_speed_tes
             best_time = 0.001
 
     # B. 尝试 IPv4
-    # - 若 mode 为 prefer-ipv6，且 IPv6 没解析到，或者虽然解析到但全部 IPv6 测速超时不通，回退尝试 IPv4
-    # - 若 mode 为 ipv4-only 且存在 IPv4
     if not best_ip and mode in ["prefer-ipv6", "ipv4-only"] and ips_v4:
-        if do_speed_test and len(ips_v4) > 1:
-            logging.debug(f"对域名 {domain} 拥有的 {len(ips_v4)} 个 IPv4 地址发起连接测速优选...")
+        if do_speed_test and len(ips_v4) > 0:
             for ip in ips_v4:
                 cost = test_ip_speed(ip, test_port)
                 if cost < best_time:
@@ -238,10 +251,9 @@ def resolve_and_select_best(domain_key, dns_servers, mode, use_doh, do_speed_tes
         else:
             best_ip = ips_v4[0]
             best_type = 'v4'
+            best_time = 0.001
             
     # 4. 极致容错保底设计：
-    # 如果开启了连接测速，但所有可通行的 IP 在当前用户的网络环境下都超时了（导致 best_ip 仍为 None），
-    # 为了防止因为测速超时误伤导致频道丢失，我们回退选取第一个解析出的 IP 做保底。
     if not best_ip:
         if mode in ["prefer-ipv6", "ipv6-only"] and ips_v6:
             best_ip = ips_v6[0]
@@ -250,7 +262,7 @@ def resolve_and_select_best(domain_key, dns_servers, mode, use_doh, do_speed_tes
             best_ip = ips_v4[0]
             best_type = 'v4'
             
-    return best_ip, best_type
+    return best_ip, best_type, best_time
 
 def download_source(url):
     """从网络下载 IPTV 列表，返回内容文本"""
@@ -362,12 +374,11 @@ def reconstruct_url(url, ip, ip_type):
     return urlunparse(new_parsed)
 
 def process_source(source_cfg, global_cfg):
-    """处理单个数据源：下载 -> 解析域名 -> 测速优选 -> 重新拼接 -> 写入本地"""
+    """处理单个数据源：下载 -> 解析域名 -> 测速优选 -> 重新排序 -> 写入本地"""
     name = source_cfg.get("name")
     url = source_cfg.get("url")
     output_filename = source_cfg.get("output")
     
-    # 局部优先级模式：如果数据源配置中指定了 mode，则覆盖全局的 mode 配置
     mode = source_cfg.get("mode", global_cfg.get("mode", "prefer-ipv6"))
     
     logging.info(f"=== 开始处理数据源 [{name}] (解析策略: {mode.upper()}) ===")
@@ -402,7 +413,7 @@ def process_source(source_cfg, global_cfg):
     use_doh = global_cfg.get("use_doh", True)
     do_speed_test = global_cfg.get("ip_speed_test", True)
     
-    dns_cache = {} # (domain, port, scheme) -> (ip, ip_type)
+    dns_cache = {} # (domain, port, scheme) -> (ip, ip_type, speed_cost)
     
     with ThreadPoolExecutor(max_workers=workers) as executor:
         future_to_key = {
@@ -412,86 +423,262 @@ def process_source(source_cfg, global_cfg):
         for future in as_completed(future_to_key):
             key = future_to_key[future]
             try:
-                ip, ip_type = future.result()
+                ip, ip_type, speed_cost = future.result()
                 if ip:
-                    dns_cache[key] = (ip, ip_type)
-                    logging.debug(f"连接优化成功: {key[0]}:{key[1]} -> {ip} ({ip_type})")
+                    dns_cache[key] = (ip, ip_type, speed_cost)
+                    logging.debug(f"连接优化成功: {key[0]}:{key[1]} -> {ip} ({ip_type})，延迟: {speed_cost:.4f}s")
                 else:
+                    dns_cache[key] = (None, None, float('inf'))
                     logging.debug(f"连接优化失败: {key[0]}:{key[1]}")
             except Exception as e:
+                dns_cache[key] = (None, None, float('inf'))
                 logging.error(f"优化连接 {key[0]} 时发生异常: {e}")
                 
-    # 3. 替换 URL 并输出到 output 文件夹
+    # 3. 双层优化与同名电视频道测速重新排序！
     keep_unresolved = global_cfg.get("keep_unresolved", False)
+    
+    # 我们创建一个列表，只保存可通行的 channel elements 或者是元数据 elements
+    processed_elements = []
+    
+    # 为同名电视频道做聚合准备
+    # 键：电视频道名；值：[channel_element_dict, ...]
+    channels_by_title = {}
+    
+    for el in elements:
+        if el["type"] == "meta":
+            processed_elements.append(el)
+        elif el["type"] == "channel":
+            try:
+                parsed = urlparse(el["url"])
+                domain = parsed.hostname
+                port = parsed.port
+                scheme = parsed.scheme
+                
+                key = (domain, port, scheme)
+                ip, ip_type, speed_cost = dns_cache.get(key, (None, None, float('inf')))
+                
+                if ip:
+                    # 替换 IP 得到最新的真实 URL
+                    new_url = reconstruct_url(el["url"], ip, ip_type)
+                    el["url"] = new_url
+                    el["speed_cost"] = speed_cost
+                    el["resolved"] = True
+                    el["ip_type"] = ip_type
+                else:
+                    el["speed_cost"] = float('inf')
+                    el["resolved"] = False
+                    
+                # 确定电视频道名，用以同名聚合
+                channel_title = ""
+                if format_type == 'm3u':
+                    if ',' in el["info"]:
+                        channel_title = el["info"].rsplit(',', 1)[1].strip()
+                    if not channel_title:
+                        channel_title = el["info"]
+                else: # txt
+                    channel_title = el["name"]
+                    
+                el["channel_title"] = channel_title
+                
+                # 过滤策略判定：
+                # 如果解析/测速彻底失败，且 keep_unresolved 为 false，则直接过滤抛弃
+                if not el["resolved"] and not keep_unresolved:
+                    logging.debug(f"频道 [{channel_title}] 所有 IP 均不可达，已被丢弃")
+                    continue
+                    
+                # 放入同名聚合容器
+                if channel_title not in channels_by_title:
+                    channels_by_title[channel_title] = []
+                channels_by_title[channel_title].append(el)
+                
+            except Exception as e:
+                logging.error(f"处理频道测速替换发生异常: {e}")
+                if keep_unresolved:
+                    processed_elements.append(el)
+                    
+    # 4. 同名电视频道测速重新排序！
+    # 对聚合好的每个同名电视频道的多个链接，根据测速延迟（speed_cost）升序排序（从小到大，越快越靠前）！
+    sorted_channels_list = []
+    
+    # 我们遍历 elements 以保持文件里电视台原本出现的相对次序！
+    # 为了避免重复写入同名电视台，我们需要标记已写入的电视台名称。
+    visited_titles = set()
+    
+    for el in elements:
+        if el["type"] == "channel":
+            # 找到它的电视频道名
+            channel_title = ""
+            if format_type == 'm3u':
+                if ',' in el["info"]:
+                    channel_title = el["info"].rsplit(',', 1)[1].strip()
+                if not channel_title:
+                    channel_title = el["info"]
+            else:
+                channel_title = el["name"]
+                
+            if channel_title in channels_by_title and channel_title not in visited_titles:
+                visited_titles.add(channel_title)
+                # 获取该电视台下所有的视频源链接
+                source_links = channels_by_title[channel_title]
+                
+                # ⭐️ 核心逻辑：根据 speed_cost（TCP 建立延迟，秒）对多源进行重新排序！
+                source_links.sort(key=lambda x: x.get("speed_cost", float('inf')))
+                
+                # 写入排序后的播放链接
+                for link_el in source_links:
+                    sorted_channels_list.append(link_el)
+                    
+    # 5. 输出写出到 output 文件夹
     output_dir = "output"
     os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, output_filename)
     
     resolved_count = 0
-    filtered_count = 0
     
     with open(output_path, "w", encoding="utf-8") as f:
-        for el in elements:
+        # 首先写入元数据首部行（如 #EXTM3U）
+        for el in processed_elements:
             if el["type"] == "meta":
                 f.write(el["content"] + "\n")
-            elif el["type"] == "channel":
-                try:
-                    parsed = urlparse(el["url"])
-                    domain = parsed.hostname
-                    port = parsed.port
-                    scheme = parsed.scheme
-                    
-                    key = (domain, port, scheme)
-                    
-                    if key in dns_cache:
-                        ip, ip_type = dns_cache[key]
-                        new_url = reconstruct_url(el["url"], ip, ip_type)
-                        resolved_count += 1
-                        
-                        if format_type == 'm3u':
-                            f.write(el["info"] + "\n")
-                            for extra_meta in el.get("extra", []):
-                                f.write(extra_meta + "\n")
-                            f.write(new_url + "\n")
-                        else: # txt
-                            f.write(f"{el['name']},{new_url}\n")
-                    else:
-                        if keep_unresolved:
-                            resolved_count += 1
-                            if format_type == 'm3u':
-                                f.write(el["info"] + "\n")
-                                for extra_meta in el.get("extra", []):
-                                    f.write(extra_meta + "\n")
-                                f.write(el["url"] + "\n")
-                            else: # txt
-                                f.write(f"{el['name']},{el['url']}\n")
-                        else:
-                            filtered_count += 1
-                            logging.debug(f"频道 [{el.get('info') or el.get('name')}] 解析/测速失败，已被过滤")
-                except Exception as e:
-                    logging.error(f"替换 URL 发生异常: {e}")
-                    if keep_unresolved:
-                        f.write(el["content"] + "\n")
-                        
+                
+        # 写入重新排序、精细优选后的电视频道链接行
+        for el in sorted_channels_list:
+            resolved_count += 1
+            if format_type == 'm3u':
+                # 对重排后的电视台行，可以在逗号后的频道名上优雅加上 [延迟评级] 或是保持原本
+                # 这里为了极致的兼容性与原本风格一致，保持原 info 内容写入
+                f.write(el["info"] + "\n")
+                for extra_meta in el.get("extra", []):
+                    f.write(extra_meta + "\n")
+                f.write(el["url"] + "\n")
+            else: # txt
+                f.write(f"{el['name']},{el['url']}\n")
+                
     logging.info(f"数据源 [{name}] 处理完毕。")
-    logging.info(f"解析并选出最优 IP 频道: {resolved_count} 个，失败被过滤频道: {filtered_count} 个")
+    logging.info(f"成功测速排序并保留频道链接: {resolved_count} 个")
     logging.info(f"结果已成功输出到: {output_path}\n")
 
-def start_web_server(port, directory="output"):
-    """多线程内置 HTTP 共享服务器，将 output 目录直接广播到局域网"""
-    class Handler(SimpleHTTPRequestHandler):
-        def __init__(self, *args, **kwargs):
-            # 将 Handler 重定向为专门提供 directory 指定目录的文件服务
-            super().__init__(*args, directory=directory, **kwargs)
+# Web 接口业务逻辑处理 Handler
+class WebConfigHandler(SimpleHTTPRequestHandler):
+    def __init__(self, *args, **kwargs):
+        # 默认提供项目 Downloads 目录下的静态网页文件服务
+        super().__init__(*args, directory=".", **kwargs)
+
+    def end_headers(self):
+        # 允许跨域以便 AJAX 调用更顺畅
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        super().end_headers()
+
+    def do_OPTIONS(self):
+        self.send_response(200, "ok")
+        self.end_headers()
+
+    def do_GET(self):
+        # 根目录重定向到 admin.html 配置后台
+        if self.path == "/" or self.path == "/admin":
+            self.send_response(302)
+            self.send_header('Location', '/admin.html')
+            self.end_headers()
+            return
             
+        # API 1: 获取当前全局配置数据
+        if self.path == "/api/config":
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.end_headers()
+            load_global_config()
+            self.wfile.write(json.dumps(global_config, ensure_ascii=False, indent=2).encode('utf-8'))
+            return
+            
+        # API 2: 获取当前系统状态
+        if self.path == "/api/status":
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.end_headers()
+            status_data = {
+                "is_updating": is_updating_flag,
+                "current_time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+                "config_loaded": bool(global_config)
+            }
+            self.wfile.write(json.dumps(status_data).encode('utf-8'))
+            return
+
+        # 其他静态文件，回退到标准处理器
+        super().do_GET()
+
+    def do_POST(self):
+        # API 3: 接收并保存全新配置数据
+        if self.path == "/api/save_config":
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length)
+            try:
+                new_cfg = json.loads(post_data.decode('utf-8'))
+                
+                # 写入 config.json 配置文件
+                with open(GLOBAL_CONFIG_PATH, "w", encoding="utf-8") as f:
+                    json.dump(new_cfg, f, ensure_ascii=False, indent=2)
+                    
+                # 重新加载内存中的全局变量
+                load_global_config()
+                
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self.end_headers()
+                self.wfile.write(json.dumps({"status": "success", "message": "配置文件已成功保存并应用！"}).encode('utf-8'))
+            except Exception as e:
+                self.send_response(500)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self.end_headers()
+                self.wfile.write(json.dumps({"status": "error", "message": f"保存配置文件失败: {e}"}).encode('utf-8'))
+            return
+
+        # API 4: 手动一键触发“立即下载并测速解析”
+        if self.path == "/api/trigger_update":
+            global is_updating_flag
+            if is_updating_flag:
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self.end_headers()
+                self.wfile.write(json.dumps({"status": "error", "message": "已有解析更新任务在后台运行中，请勿重复触发。"}).encode('utf-8'))
+                return
+                
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(json.dumps({"status": "success", "message": "已在后台触发一键更新与多源测速排序任务！"}).encode('utf-8'))
+            
+            # 后台启动异步线程执行更新
+            def async_update():
+                global is_updating_flag
+                is_updating_flag = True
+                try:
+                    logging.info("[Web GUI] 接收到手动触发请求，开始新一轮解析测速重排流程...")
+                    run_once(GLOBAL_CONFIG_PATH)
+                except Exception as e:
+                    logging.error(f"[Web GUI] 异步触发解析发生异常: {e}")
+                finally:
+                    is_updating_flag = False
+                    
+            t = threading.Thread(target=async_update)
+            t.start()
+            return
+
+        self.send_response(404)
+        self.end_headers()
+
+def start_web_server(port, directory="output"):
+    """多线程内置 HTTP / API 服务器，合并共享目录与 GUI 管理后台"""
     class TCPServer(socketserver.TCPServer):
-        # 允许端口快速释放与复用，防止重启时报 Address already in use
         allow_reuse_address = True
         
     try:
-        with TCPServer(("", port), Handler) as httpd:
-            logging.info(f"[局域网共享] 服务已成功启动！")
-            logging.info(f"👉 局域网电视/播放器订阅地址: http://<您的服务器IP>:{port}/<输出文件名>")
+        # 使用自定义的 WebConfigHandler 统一拦截 API 接口和静态页面
+        with TCPServer(("", port), WebConfigHandler) as httpd:
+            logging.info(f"[微服务 Web 服务器] 启动成功！")
+            logging.info(f"👉 局域网 Web 管理配置后台: http://<您的服务器IP>:{port}/admin")
+            logging.info(f"👉 电视/播放器订阅文件夹挂在在当前服务端口下，直接访问: http://<您的服务器IP>:{port}/output/<输出文件名>")
             httpd.serve_forever()
     except Exception as e:
         logging.error(f"启动局域网共享 Web 服务失败: {e}")
@@ -525,39 +712,37 @@ def main():
     parser.add_argument("-c", "--config", default="config.json", help="配置文件路径 (默认: config.json)")
     args = parser.parse_args()
     
-    logging.info("IPTV 域名解析与 IP 优选服务启动...")
-    run_once(args.config)
+    global GLOBAL_CONFIG_PATH
+    GLOBAL_CONFIG_PATH = args.config
+    load_global_config()
     
-    try:
-        with open(args.config, "r", encoding="utf-8") as f:
-            cfg = json.load(f)
-    except Exception:
-        cfg = {}
-        
-    # 局域网 Web 共享服务器启动 (在常驻运行模式下)
-    interval = cfg.get("update_interval_hours", 0)
-    web_port = cfg.get("web_port", 0)
+    logging.info("IPTV 域名解析、多 IP 优选与同名重排序服务启动...")
+    run_once(GLOBAL_CONFIG_PATH)
+    
+    interval = global_config.get("update_interval_hours", 0)
+    web_port = global_config.get("web_port", 0)
     
     if interval > 0:
         if web_port > 0:
+            # 开启内置多用途 Web 共享与 API 服务器
             web_thread = threading.Thread(target=start_web_server, args=(web_port, "output"), daemon=True)
             web_thread.start()
             
-        logging.info(f"服务已进入常驻守护进程模式。每 {interval} 小时自动更新一次...")
+        logging.info(f"服务已进入常驻守护进程模式。每 {interval} 小时自动更新与测速排序一次...")
         try:
             while True:
                 time.sleep(interval * 3600)
-                logging.info("定时更新触发，开始新一轮解析与测速流程...")
-                run_once(args.config)
+                logging.info("定时更新触发，开始新一轮解析与同名重排流程...")
+                run_once(GLOBAL_CONFIG_PATH)
         except KeyboardInterrupt:
             logging.info("服务被用户手动终止。")
     else:
-        # 单次执行模式下，如果开启了 web 端口，则需要挂起主线程以提供 Web 服务，否则主线程退出就无法访问了
+        # 单次执行模式下，如果开启了 web 端口，则主线程挂起以对外提供后台管理和文件订阅服务
         if web_port > 0:
-            logging.info(f"单次解析完成。由于开启了局域网共享且属于单次模式，主线程将挂起以提供 Web 服务...")
+            logging.info(f"单次解析完成。由于开启了 Web 服务且属于单次模式，主线程将挂起以提供局域网后台与分发...")
             start_web_server(web_port, "output")
         else:
-            logging.info("单次解析任务执行完毕，程序退出。")
+            logging.info("单次解析与同名重排任务完毕，程序退出。")
 
 if __name__ == "__main__":
     main()

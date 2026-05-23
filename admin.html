@@ -1,0 +1,828 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IPTV 智能解析与网速优选管理后台</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Noto+Sans+SC:wght@300;400;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #0b0f19;
+            --card-bg: rgba(17, 25, 40, 0.65);
+            --card-border: rgba(255, 255, 255, 0.08);
+            --accent-glow: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 50%, #d946ef 100%);
+            --accent-color: #6366f1;
+            --text-main: #f3f4f6;
+            --text-muted: #9ca3af;
+            --success-color: #10b981;
+            --error-color: #ef4444;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Outfit', 'Noto Sans SC', sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            overflow-x: hidden;
+            background-image: 
+                radial-gradient(circle at 10% 20%, rgba(99, 102, 241, 0.15) 0%, transparent 40%),
+                radial-gradient(circle at 90% 80%, rgba(217, 70, 239, 0.12) 0%, transparent 40%);
+            background-attachment: fixed;
+        }
+
+        /* 顶部辉光条 */
+        .top-glow {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 5px;
+            background: var(--accent-glow);
+            z-index: 100;
+        }
+
+        /* 容器主体 */
+        .container {
+            width: 100%;
+            max-width: 1100px;
+            padding: 40px 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 30px;
+        }
+
+        /* 标题部分 */
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            backdrop-filter: blur(12px);
+            background: rgba(17, 25, 40, 0.4);
+            border: 1px solid var(--card-border);
+            padding: 20px 30px;
+            border-radius: 20px;
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+        }
+
+        .header-title h1 {
+            font-weight: 800;
+            font-size: 1.8rem;
+            background: var(--accent-glow);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            letter-spacing: -0.5px;
+        }
+
+        .header-title p {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+
+        .status-badge {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: rgba(255, 255, 255, 0.05);
+            padding: 8px 16px;
+            border-radius: 30px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            background-color: var(--success-color);
+            border-radius: 50%;
+            box-shadow: 0 0 10px var(--success-color);
+            animation: pulse 2s infinite;
+        }
+
+        .status-dot.busy {
+            background-color: #f59e0b;
+            box-shadow: 0 0 10px #f59e0b;
+        }
+
+        /* 卡片玻璃拟态 */
+        .card {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 24px;
+            padding: 30px;
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            box-shadow: 0 10px 40px 0 rgba(0, 0, 0, 0.25);
+            position: relative;
+            overflow: hidden;
+            transition: transform 0.3s ease, border-color 0.3s ease;
+        }
+
+        .card:hover {
+            border-color: rgba(255, 255, 255, 0.15);
+        }
+
+        .card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(180deg, rgba(255,255,255,0.02) 0%, transparent 100%);
+            pointer-events: none;
+        }
+
+        .card-header {
+            margin-bottom: 24px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+            padding-bottom: 16px;
+        }
+
+        .card-header h2 {
+            font-size: 1.25rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        /* 网格布局 */
+        .grid-2 {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+        }
+
+        /* 表单控件 */
+        .form-group {
+            margin-bottom: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        label {
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        input[type="text"], input[type="number"], select {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 12px;
+            padding: 12px 16px;
+            color: var(--text-main);
+            font-family: inherit;
+            font-size: 0.95rem;
+            transition: all 0.3s ease;
+            outline: none;
+            width: 100%;
+        }
+
+        input[type="text"]:focus, input[type="number"]:focus, select:focus {
+            border-color: var(--accent-color);
+            background: rgba(255, 255, 255, 0.05);
+            box-shadow: 0 0 12px rgba(99, 102, 241, 0.2);
+        }
+
+        /* 滑块开关组合 */
+        .switch-group {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: rgba(255, 255, 255, 0.02);
+            padding: 14px 20px;
+            border-radius: 16px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            margin-bottom: 15px;
+        }
+
+        .switch-info h4 {
+            font-size: 0.95rem;
+            font-weight: 600;
+        }
+
+        .switch-info p {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-top: 2px;
+        }
+
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 48px;
+            height: 26px;
+        }
+
+        .switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: rgba(255, 255, 255, 0.1);
+            transition: .4s;
+            border-radius: 34px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 18px;
+            width: 18px;
+            left: 3px;
+            bottom: 3px;
+            background-color: var(--text-main);
+            transition: .4s;
+            border-radius: 50%;
+        }
+
+        input:checked + .slider {
+            background: var(--accent-glow);
+        }
+
+        input:checked + .slider:before {
+            transform: translateX(22px);
+        }
+
+        /* 数据源动态列表样式 */
+        .source-item {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 18px;
+            padding: 20px;
+            margin-bottom: 15px;
+            position: relative;
+            transition: all 0.3s ease;
+        }
+
+        .source-item:hover {
+            border-color: rgba(255, 255, 255, 0.1);
+            background: rgba(255, 255, 255, 0.03);
+        }
+
+        .source-item-grid {
+            display: grid;
+            grid-template-columns: 1.5fr 3fr 1.5fr 1fr;
+            gap: 15px;
+        }
+
+        @media (max-width: 768px) {
+            .source-item-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .delete-btn {
+            position: absolute;
+            top: -10px;
+            right: -10px;
+            background: var(--error-color);
+            color: #fff;
+            border: none;
+            width: 26px;
+            height: 26px;
+            border-radius: 50%;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.8rem;
+            font-weight: bold;
+            box-shadow: 0 4px 10px rgba(239, 68, 68, 0.4);
+            transition: transform 0.2s ease;
+        }
+
+        .delete-btn:hover {
+            transform: scale(1.15);
+        }
+
+        .add-btn {
+            background: rgba(99, 102, 241, 0.15);
+            color: var(--accent-color);
+            border: 1px dashed var(--accent-color);
+            padding: 14px;
+            border-radius: 16px;
+            width: 100%;
+            font-size: 0.95rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .add-btn:hover {
+            background: rgba(99, 102, 241, 0.25);
+            transform: translateY(-2px);
+        }
+
+        /* 按钮与操作 */
+        .actions-panel {
+            display: flex;
+            justify-content: flex-end;
+            gap: 15px;
+        }
+
+        .btn {
+            padding: 14px 28px;
+            border-radius: 14px;
+            font-weight: 600;
+            font-size: 0.95rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            border: none;
+            outline: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.05);
+            color: var(--text-main);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.08);
+            transform: translateY(-2px);
+        }
+
+        .btn-primary {
+            background: var(--accent-glow);
+            color: #fff;
+            box-shadow: 0 4px 20px rgba(99, 102, 241, 0.35);
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(99, 102, 241, 0.45);
+        }
+
+        .btn-success {
+            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+            color: #fff;
+            box-shadow: 0 4px 20px rgba(16, 185, 129, 0.3);
+        }
+
+        .btn-success:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(16, 185, 129, 0.4);
+        }
+
+        /* 提示框 Toast & Modal */
+        .toast {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            background: rgba(17, 25, 40, 0.9);
+            border: 1px solid var(--success-color);
+            padding: 16px 24px;
+            border-radius: 16px;
+            backdrop-filter: blur(12px);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            transform: translateY(150px);
+            transition: transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            z-index: 1000;
+        }
+
+        .toast.show {
+            transform: translateY(0);
+        }
+
+        .toast.error {
+            border-color: var(--error-color);
+        }
+
+        /* 全局遮罩 Loading Panel */
+        .overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(11, 15, 25, 0.85);
+            backdrop-filter: blur(8px);
+            z-index: 2000;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 20px;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s ease;
+        }
+
+        .overlay.active {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .spinner {
+            width: 60px;
+            height: 60px;
+            border: 4px solid rgba(255, 255, 255, 0.05);
+            border-top-color: var(--accent-color);
+            border-radius: 50%;
+            animation: spin 1s infinite linear;
+        }
+
+        /* 动画定义 */
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(0.95); opacity: 0.5; }
+            50% { transform: scale(1); opacity: 1; }
+            100% { transform: scale(0.95); opacity: 0.5; }
+        }
+    </style>
+</head>
+<body>
+    <div class="top-glow"></div>
+
+    <div class="container">
+        <!-- 头部导航与状态 -->
+        <header>
+            <div class="header-title">
+                <h1>IPTV 智能域名解析与网速优选微服务</h1>
+                <p>可视化控制管理后台 | 全球首发防污染 DoH 与双层 IP 优选排序</p>
+            </div>
+            <div class="status-badge">
+                <div class="status-dot" id="status-dot"></div>
+                <span id="status-text">就绪中...</span>
+            </div>
+        </header>
+
+        <!-- 主配置面板 -->
+        <div class="card">
+            <div class="card-header">
+                <h2>⚙️ 全局策略配置</h2>
+            </div>
+            <form id="config-form">
+                <div class="grid-2">
+                    <div class="form-group">
+                        <label for="mode">双栈智能解析模式</label>
+                        <select id="mode" name="mode">
+                            <option value="prefer-ipv6">优先尝试 IPv6，解析不到降级为 IPv4</option>
+                            <option value="ipv6-only">纯强制 IPv6，无结果直接忽略该链接</option>
+                            <option value="ipv4-only">纯强制 IPv4，无结果直接忽略该链接</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="update_interval_hours">常驻定时更新周期 (小时)</label>
+                        <input type="number" id="update_interval_hours" name="update_interval_hours" min="0" max="72" placeholder="填 0 代表单次手动运行，不常驻">
+                    </div>
+                </div>
+
+                <div class="grid-2">
+                    <div class="form-group">
+                        <label for="workers">高并发执行线程数</label>
+                        <input type="number" id="workers" name="workers" min="10" max="100" placeholder="默认 50">
+                    </div>
+                    <div class="form-group">
+                        <label for="web_port">局域网共享 Web 服务器端口</label>
+                        <input type="number" id="web_port" name="web_port" min="0" max="65535" placeholder="例如 8080，填 0 不开启">
+                    </div>
+                </div>
+
+                <div class="grid-2">
+                    <div class="switch-group">
+                        <div class="switch-info">
+                            <h4>DNS-over-HTTPS (DoH) 引擎</h4>
+                            <p>使用加密 HTTPS 解析，100% 避开本地代理 Fake-IP 劫持</p>
+                        </div>
+                        <label class="switch">
+                            <input type="checkbox" id="use_doh" name="use_doh" checked>
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+
+                    <div class="switch-group">
+                        <div class="switch-info">
+                            <h4>双层 IP 优选与连接测速</h4>
+                            <p>在所有解析 IP 和同名播放源中发起 TCP 连接测速，选出最快 IP</p>
+                        </div>
+                        <label class="switch">
+                            <input type="checkbox" id="ip_speed_test" name="ip_speed_test" checked>
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- 传统 DNS 配置 -->
+                <div class="form-group" style="margin-top: 10px;">
+                    <label for="dns_servers">传统内网/本地 DNS 服务器 (以逗号隔开，留空默认启用公网 DoH)</label>
+                    <input type="text" id="dns_servers" name="dns_servers" placeholder="例如: 192.168.1.1, 119.29.29.29">
+                </div>
+
+                <!-- 数据源列表 -->
+                <div class="card-header" style="margin: 35px 0 20px 0;">
+                    <h2>📺 IPTV 网络订阅源管理</h2>
+                </div>
+                
+                <div id="sources-container">
+                    <!-- 订阅源行动态生成 -->
+                </div>
+                
+                <button type="button" class="add-btn" id="add-source-btn">
+                    <span>➕ 添加新的 IPTV 网络数据源</span>
+                </button>
+            </form>
+        </div>
+
+        <!-- 动作操作区 -->
+        <div class="actions-panel">
+            <button class="btn btn-secondary" id="trigger-btn">
+                <span>⚡ 立即触发解析测速更新</span>
+            </button>
+            <button class="btn btn-primary" id="save-btn">
+                <span>💾 保存并应用当前配置</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- Toast 提示 -->
+    <div class="toast" id="toast">
+        <span id="toast-icon">✨</span>
+        <span id="toast-message">操作成功！</span>
+    </div>
+
+    <!-- Loading 遮罩 -->
+    <div class="overlay" id="overlay">
+        <div class="spinner"></div>
+        <h2 style="font-weight: 600;">正在云端进行高并发测速与解析排序...</h2>
+        <p style="color: var(--text-muted); font-size: 0.9rem;">请耐心等待，这通常只需要 10-15 秒钟</p>
+    </div>
+
+    <script>
+        // DOM 元素引用
+        const configForm = document.getElementById('config-form');
+        const sourcesContainer = document.getElementById('sources-container');
+        const addSourceBtn = document.getElementById('add-source-btn');
+        const saveBtn = document.getElementById('save-btn');
+        const triggerBtn = document.getElementById('trigger-btn');
+        const statusDot = document.getElementById('status-dot');
+        const statusText = document.getElementById('status-text');
+        const toast = document.getElementById('toast');
+        const toastMessage = document.getElementById('toast-message');
+        const toastIcon = document.getElementById('toast-icon');
+        const overlay = document.getElementById('overlay');
+
+        // 展示 Toast 消息
+        function showToast(message, isError = false) {
+            toastMessage.textContent = message;
+            if (isError) {
+                toast.classList.add('error');
+                toastIcon.textContent = '❌';
+            } else {
+                toast.classList.remove('error');
+                toastIcon.textContent = '✨';
+            }
+            toast.classList.add('show');
+            setTimeout(() => {
+                toast.classList.remove('show');
+            }, 3000);
+        }
+
+        // 创建单行 IPTV 订阅源表单
+        function createSourceRow(data = { name: '', url: '', output: '', mode: '' }) {
+            const id = 'src-' + Math.random().toString(36).substr(2, 9);
+            const row = document.createElement('div');
+            row.className = 'source-item';
+            row.id = id;
+            
+            row.innerHTML = `
+                <button type="button" class="delete-btn">&times;</button>
+                <div class="source-item-grid">
+                    <div class="form-group">
+                        <label>数据源别名</label>
+                        <input type="text" class="src-name" value="${data.name}" placeholder="如: CCTV主源" required>
+                    </div>
+                    <div class="form-group">
+                        <label>网络抓取链接 (M3U / TXT)</label>
+                        <input type="text" class="src-url" value="${data.url}" placeholder="支持GitHub网页链接自动转换" required>
+                    </div>
+                    <div class="form-group">
+                        <label>本源专属解析</label>
+                        <select class="src-mode">
+                            <option value="" ${data.mode === '' ? 'selected' : ''}>继承全局配置</option>
+                            <option value="prefer-ipv6" ${data.mode === 'prefer-ipv6' ? 'selected' : ''}>优先尝试 IPv6</option>
+                            <option value="ipv6-only" ${data.mode === 'ipv6-only' ? 'selected' : ''}>纯强制 IPv6 (不降级)</option>
+                            <option value="ipv4-only" ${data.mode === 'ipv4-only' ? 'selected' : ''}>纯强制 IPv4 (不降级)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>本地输出文件名</label>
+                        <input type="text" class="src-output" value="${data.output}" placeholder="如: resolved.m3u" required>
+                    </div>
+                </div>
+            `;
+            
+            // 绑定删除动作
+            row.querySelector('.delete-btn').addEventListener('click', () => {
+                row.remove();
+            });
+            
+            sourcesContainer.appendChild(row);
+        }
+
+        // 获取系统运行状态并动态更新 Badge
+        async function fetchStatus() {
+            try {
+                const response = await fetch('/api/status');
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.is_updating) {
+                        statusDot.className = 'status-dot busy';
+                        statusText.textContent = '正在并发解析测速中...';
+                    } else {
+                        statusDot.className = 'status-dot';
+                        statusText.textContent = '微服务运行正常 (就绪)';
+                    }
+                }
+            } catch (e) {
+                console.error("无法拉取系统状态: ", e);
+            }
+        }
+
+        // 加载配置文件并初始化渲染
+        async function loadConfig() {
+            try {
+                const response = await fetch('/api/config');
+                if (response.ok) {
+                    const config = await response.json();
+                    
+                    // 填入全局参数
+                    document.getElementById('mode').value = config.mode || 'prefer-ipv6';
+                    document.getElementById('update_interval_hours').value = config.update_interval_hours !== undefined ? config.update_interval_hours : 12;
+                    document.getElementById('workers').value = config.workers || 50;
+                    document.getElementById('web_port').value = config.web_port || 8080;
+                    document.getElementById('use_doh').checked = config.use_doh !== false;
+                    document.getElementById('ip_speed_test').checked = config.ip_speed_test !== false;
+                    document.getElementById('dns_servers').value = config.dns_servers ? config.dns_servers.join(', ') : '';
+                    
+                    // 清空原有行并填充 sources
+                    sourcesContainer.innerHTML = '';
+                    if (config.sources && config.sources.length > 0) {
+                        config.sources.forEach(src => {
+                            createSourceRow(src);
+                        });
+                    } else {
+                        // 默认给一个空行
+                        createSourceRow();
+                    }
+                } else {
+                    showToast("拉取配置数据失败！", true);
+                }
+            } catch (e) {
+                showToast("连接后端微服务接口超时！", true);
+            }
+        }
+
+        // 按钮监听：添加新行
+        addSourceBtn.addEventListener('click', () => {
+            createSourceRow();
+        });
+
+        // 按钮监听：保存配置
+        saveBtn.addEventListener('click', async () => {
+            // 表单校验
+            const names = document.querySelectorAll('.src-name');
+            const urls = document.querySelectorAll('.src-url');
+            const outputs = document.querySelectorAll('.src-output');
+            
+            for(let i=0; i<names.length; i++) {
+                if(!names[i].value || !urls[i].value || !outputs[i].value) {
+                    showToast("请填写完整所有网络抓取源的配置数据！", true);
+                    return;
+                }
+            }
+
+            // 搜集并重组数据
+            const dnsServersVal = document.getElementById('dns_servers').value;
+            const dns_servers = dnsServersVal ? dnsServersVal.split(',').map(s => s.trim()).filter(s => s) : [];
+            
+            const sources = [];
+            const items = document.querySelectorAll('.source-item');
+            items.forEach(item => {
+                const name = item.querySelector('.src-name').value.trim();
+                const url = item.querySelector('.src-url').value.trim();
+                const output = item.querySelector('.src-output').value.trim();
+                const mode = item.querySelector('.src-mode').value;
+                
+                const srcData = { name, url, output };
+                if (mode) srcData.mode = mode; // 局部 mode 仅在有值时保存
+                
+                sources.push(srcData);
+            });
+
+            const newConfig = {
+                dns_servers: dns_servers,
+                use_doh: document.getElementById('use_doh').checked,
+                mode: document.getElementById('mode').value,
+                update_interval_hours: parseInt(document.getElementById('update_interval_hours').value) || 0,
+                keep_unresolved: false, // 强制默认为 false 过滤死链
+                ip_speed_test: document.getElementById('ip_speed_test').checked,
+                workers: parseInt(document.getElementById('workers').value) || 50,
+                web_port: parseInt(document.getElementById('web_port').value) || 0,
+                sources: sources
+            };
+
+            // 发起 POST 保存
+            try {
+                const response = await fetch('/api/save_config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(newConfig)
+                });
+                
+                const res = await response.json();
+                if (response.ok && res.status === 'success') {
+                    showToast(res.message);
+                    loadConfig(); // 刷新渲染
+                } else {
+                    showToast(res.message || "修改配置失败！", true);
+                }
+            } catch (e) {
+                showToast("保存配置网络请求发生错误！", true);
+            }
+        });
+
+        // 按钮监听：立即触发一键更新
+        triggerBtn.addEventListener('click', async () => {
+            overlay.classList.add('active');
+            try {
+                const response = await fetch('/api/trigger_update', { method: 'POST' });
+                const res = await response.json();
+                if (response.ok && res.status === 'success') {
+                    // 后端在异步执行更新，我们进行前端轮询检测
+                    let pollCount = 0;
+                    const intervalId = setInterval(async () => {
+                        pollCount++;
+                        const statusResp = await fetch('/api/status');
+                        if (statusResp.ok) {
+                            const statusData = await statusResp.json();
+                            // 当更新执行标志变为 false 代表执行完毕，关闭 loading
+                            if (!statusData.is_updating || pollCount > 120) {
+                                clearInterval(intervalId);
+                                overlay.classList.remove('active');
+                                showToast("🎉 全套多源网速重排序解析更新已圆满完成！");
+                            }
+                        }
+                    }, 1000);
+                } else {
+                    overlay.classList.remove('active');
+                    showToast(res.message || "触发失败", true);
+                }
+            } catch(e) {
+                overlay.classList.remove('active');
+                showToast("触发一键更新网络请求异常！", true);
+            }
+        });
+
+        // 页面首次初始化
+        loadConfig();
+        fetchStatus();
+        
+        // 开启 3 秒钟的系统状态轮询
+        setInterval(fetchStatus, 3000);
+    </script>
+</body>
+</html>
