@@ -2,11 +2,12 @@ version: '3.8'
 
 services:
   iptv-resolver:
-    build: .
+    # ⭐️ 移除了本地 Build 编译，直接拉取您在 GitHub Actions 云端自动构建好的最新专属容器镜像！
+    image: ghcr.io/busymilk/iptv-resolver:latest
     container_name: iptv-resolver
     restart: unless-stopped
     ports:
-      - "8080:8080" # 将容器内的 8080 局域网端口暴露给电视等局域网设备
+      - "8080:8080" # 将微服务的局域网配置后台与订阅分发端口映射到宿主机
     volumes:
       - ./config.json:/app/config.json
       - ./output:/app/output
