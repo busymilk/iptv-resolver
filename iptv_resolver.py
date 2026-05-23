@@ -7,6 +7,7 @@ import time
 import json
 import socket
 import logging
+import logging.handlers
 import argparse
 import threading
 import subprocess
@@ -38,12 +39,23 @@ def ensure_dependencies():
             logging.error(f"自动安装依赖失败: {e}。请手动执行: pip install {' '.join(missing)}")
             sys.exit(1)
 
-# 配置日志
+# 创建输出目录以保证日志文件能顺利生成
+os.makedirs("output", exist_ok=True)
+log_path = os.path.join("output", "resolver.log")
+
+# 创建自动滚动轮转的文件日志处理器 (限制最大 2MB，最多保留 3 个备份文件)
+file_handler = logging.handlers.RotatingFileHandler(
+    log_path, maxBytes=2 * 1024 * 1024, backupCount=3, encoding='utf-8'
+)
+stream_handler = logging.StreamHandler(sys.stdout)
+
+# 同时向控制台标准输出和本地归档日志文件打印，防污染
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[
-        logging.StreamHandler(sys.stdout)
+        file_handler,
+        stream_handler
     ]
 )
 
