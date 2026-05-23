@@ -1,0 +1,56 @@
+name: Build and Publish Docker Image
+
+# 当代码推送到 main 分支，或者推送带有版本 tag（如 v1.0.0）时，自动触发构建
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+
+env:
+  # 使用 GitHub 的官方容器镜像仓库 Container Registry (GHCR)
+  REGISTRY: ghcr.io
+  # 镜像名称默认与您的 GitHub 用户名/仓库名一致 (例如: ghcr.io/busymilk/iptv-resolver)
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      # 1. 拉取仓库代码
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. 登录到 GitHub 容器镜像仓库 (利用自动生成的秘密 GITHUB_TOKEN，安全免密登录)
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 3. 提取 Docker 镜像的元数据（自动解析 tag 版本、Git SHA 等）
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=sha,prefix=
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      # 4. 构建 Docker 镜像并自动推送至 GitHub Packages (GHCR)
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
