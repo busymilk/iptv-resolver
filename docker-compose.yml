@@ -10,7 +10,6 @@ services:
       - "8080:8080" # 将微服务的局域网配置后台与订阅分发端口映射到宿主机
     volumes:
       - ./config.json:/app/config.json
-      - ./index.html:/app/index.html
       - ./output:/app/output
     environment:
       - TZ=Asia/Shanghai

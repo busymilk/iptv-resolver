@@ -10,13 +10,13 @@
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Noto+Sans+SC:wght@300;400;700&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg-color: #0b0f19;
-            --card-bg: rgba(17, 25, 40, 0.65);
-            --card-border: rgba(255, 255, 255, 0.08);
-            --accent-glow: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 50%, #d946ef 100%);
-            --accent-color: #6366f1;
-            --text-main: #f3f4f6;
-            --text-muted: #9ca3af;
+            --bg-color: #f1f3f7;
+            --card-bg: rgba(255, 255, 255, 0.72);
+            --card-border: rgba(255, 255, 255, 0.6);
+            --accent-glow: linear-gradient(135deg, #2a5298 0%, #1e3c72 50%, #3a7bd5 100%);
+            --accent-color: #2a5298;
+            --text-main: #2c3e50;
+            --text-muted: #64748b;
             --success-color: #10b981;
             --error-color: #ef4444;
         }
@@ -37,8 +37,8 @@
             align-items: center;
             overflow-x: hidden;
             background-image: 
-                radial-gradient(circle at 10% 20%, rgba(99, 102, 241, 0.15) 0%, transparent 40%),
-                radial-gradient(circle at 90% 80%, rgba(217, 70, 239, 0.12) 0%, transparent 40%);
+                radial-gradient(circle at 10% 20%, rgba(58, 123, 213, 0.12) 0%, transparent 40%),
+                radial-gradient(circle at 90% 80%, rgba(42, 82, 152, 0.08) 0%, transparent 40%);
             background-attachment: fixed;
         }
 
@@ -69,11 +69,12 @@
             justify-content: space-between;
             align-items: center;
             backdrop-filter: blur(12px);
-            background: rgba(17, 25, 40, 0.4);
+            -webkit-backdrop-filter: blur(12px);
+            background: rgba(255, 255, 255, 0.6);
             border: 1px solid var(--card-border);
             padding: 20px 30px;
             border-radius: 20px;
-            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+            box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.04);
         }
 
         .header-title h1 {
@@ -95,10 +96,10 @@
             display: flex;
             align-items: center;
             gap: 10px;
-            background: rgba(255, 255, 255, 0.05);
+            background: rgba(0, 0, 0, 0.03);
             padding: 8px 16px;
             border-radius: 30px;
-            border: 1px solid rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(0, 0, 0, 0.03);
             font-size: 0.85rem;
             font-weight: 600;
         }
@@ -125,14 +126,14 @@
             padding: 30px;
             backdrop-filter: blur(20px);
             -webkit-backdrop-filter: blur(20px);
-            box-shadow: 0 10px 40px 0 rgba(0, 0, 0, 0.25);
+            box-shadow: 0 10px 40px 0 rgba(31, 38, 135, 0.06);
             position: relative;
             overflow: hidden;
             transition: transform 0.3s ease, border-color 0.3s ease;
         }
 
         .card:hover {
-            border-color: rgba(255, 255, 255, 0.15);
+            border-color: rgba(42, 82, 152, 0.2);
         }
 
         .card::before {
@@ -142,13 +143,13 @@
             left: 0;
             width: 100%;
             height: 100%;
-            background: linear-gradient(180deg, rgba(255,255,255,0.02) 0%, transparent 100%);
+            background: linear-gradient(180deg, rgba(255,255,255,0.4) 0%, transparent 100%);
             pointer-events: none;
         }
 
         .card-header {
             margin-bottom: 24px;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+            border-bottom: 1px solid rgba(0, 0, 0, 0.05);
             padding-bottom: 16px;
         }
 
@@ -184,8 +185,8 @@
         }
 
         input[type="text"], input[type="number"], select {
-            background: rgba(255, 255, 255, 0.03);
-            border: 1px solid rgba(255, 255, 255, 0.08);
+            background: rgba(255, 255, 255, 0.85);
+            border: 1px solid rgba(0, 0, 0, 0.08);
             border-radius: 12px;
             padding: 12px 16px;
             color: var(--text-main);
@@ -198,8 +199,8 @@
 
         input[type="text"]:focus, input[type="number"]:focus, select:focus {
             border-color: var(--accent-color);
-            background: rgba(255, 255, 255, 0.05);
-            box-shadow: 0 0 12px rgba(99, 102, 241, 0.2);
+            background: #ffffff;
+            box-shadow: 0 0 12px rgba(58, 123, 213, 0.15);
         }
 
         /* 滑块开关组合 */
@@ -207,10 +208,10 @@
             display: flex;
             align-items: center;
             justify-content: space-between;
-            background: rgba(255, 255, 255, 0.02);
+            background: rgba(0, 0, 0, 0.02);
             padding: 14px 20px;
             border-radius: 16px;
-            border: 1px solid rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(0, 0, 0, 0.04);
             margin-bottom: 15px;
         }
 
@@ -245,10 +246,10 @@
             left: 0;
             right: 0;
             bottom: 0;
-            background-color: rgba(255, 255, 255, 0.1);
+            background-color: rgba(0, 0, 0, 0.08);
             transition: .4s;
             border-radius: 34px;
-            border: 1px solid rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(0, 0, 0, 0.04);
         }
 
         .slider:before {
@@ -258,9 +259,10 @@
             width: 18px;
             left: 3px;
             bottom: 3px;
-            background-color: var(--text-main);
+            background-color: #ffffff;
             transition: .4s;
             border-radius: 50%;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.15);
         }
 
         input:checked + .slider {
@@ -273,8 +275,8 @@
 
         /* 数据源动态列表样式 */
         .source-item {
-            background: rgba(255, 255, 255, 0.02);
-            border: 1px solid rgba(255, 255, 255, 0.05);
+            background: rgba(255, 255, 255, 0.4);
+            border: 1px solid rgba(0, 0, 0, 0.04);
             border-radius: 18px;
             padding: 20px;
             margin-bottom: 15px;
@@ -283,8 +285,9 @@
         }
 
         .source-item:hover {
-            border-color: rgba(255, 255, 255, 0.1);
-            background: rgba(255, 255, 255, 0.03);
+            border-color: rgba(42, 82, 152, 0.2);
+            background: rgba(255, 255, 255, 0.85);
+            box-shadow: 0 6px 20px rgba(31, 38, 135, 0.02);
         }
 
         .source-item-grid {
@@ -315,7 +318,7 @@
             justify-content: center;
             font-size: 0.8rem;
             font-weight: bold;
-            box-shadow: 0 4px 10px rgba(239, 68, 68, 0.4);
+            box-shadow: 0 4px 10px rgba(239, 68, 68, 0.3);
             transition: transform 0.2s ease;
         }
 
@@ -324,7 +327,7 @@
         }
 
         .add-btn {
-            background: rgba(99, 102, 241, 0.15);
+            background: rgba(42, 82, 152, 0.06);
             color: var(--accent-color);
             border: 1px dashed var(--accent-color);
             padding: 14px;
@@ -342,7 +345,7 @@
         }
 
         .add-btn:hover {
-            background: rgba(99, 102, 241, 0.25);
+            background: rgba(42, 82, 152, 0.12);
             transform: translateY(-2px);
         }
 
@@ -368,36 +371,39 @@
         }
 
         .btn-secondary {
-            background: rgba(255, 255, 255, 0.05);
+            background: rgba(255, 255, 255, 0.85);
             color: var(--text-main);
-            border: 1px solid rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(0, 0, 0, 0.08);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.03);
         }
 
         .btn-secondary:hover {
-            background: rgba(255, 255, 255, 0.08);
+            background: #ffffff;
+            border-color: rgba(0, 0, 0, 0.12);
             transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.06);
         }
 
         .btn-primary {
             background: var(--accent-glow);
             color: #fff;
-            box-shadow: 0 4px 20px rgba(99, 102, 241, 0.35);
+            box-shadow: 0 4px 20px rgba(42, 82, 152, 0.25);
         }
 
         .btn-primary:hover {
             transform: translateY(-2px);
-            box-shadow: 0 8px 25px rgba(99, 102, 241, 0.45);
+            box-shadow: 0 8px 25px rgba(42, 82, 152, 0.35);
         }
 
         .btn-success {
             background: linear-gradient(135deg, #10b981 0%, #059669 100%);
             color: #fff;
-            box-shadow: 0 4px 20px rgba(16, 185, 129, 0.3);
+            box-shadow: 0 4px 20px rgba(16, 185, 129, 0.2);
         }
 
         .btn-success:hover {
             transform: translateY(-2px);
-            box-shadow: 0 8px 25px rgba(16, 185, 129, 0.4);
+            box-shadow: 0 8px 25px rgba(16, 185, 129, 0.3);
         }
 
         /* 提示框 Toast & Modal */
@@ -405,12 +411,12 @@
             position: fixed;
             bottom: 30px;
             right: 30px;
-            background: rgba(17, 25, 40, 0.9);
+            background: rgba(255, 255, 255, 0.95);
             border: 1px solid var(--success-color);
             padding: 16px 24px;
             border-radius: 16px;
             backdrop-filter: blur(12px);
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            box-shadow: 0 10px 30px rgba(31, 38, 135, 0.08);
             display: flex;
             align-items: center;
             gap: 12px;
@@ -434,7 +440,7 @@
             left: 0;
             width: 100%;
             height: 100%;
-            background: rgba(11, 15, 25, 0.85);
+            background: rgba(255, 255, 255, 0.85);
             backdrop-filter: blur(8px);
             z-index: 2000;
             display: flex;
@@ -455,7 +461,7 @@
         .spinner {
             width: 60px;
             height: 60px;
-            border: 4px solid rgba(255, 255, 255, 0.05);
+            border: 4px solid rgba(0, 0, 0, 0.05);
             border-top-color: var(--accent-color);
             border-radius: 50%;
             animation: spin 1s infinite linear;

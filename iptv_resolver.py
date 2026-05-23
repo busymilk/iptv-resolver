@@ -758,32 +758,58 @@ def main():
     GLOBAL_CONFIG_PATH = args.config
     load_global_config()
     
-    logging.info("IPTV 域名解析、多 IP 优选与同名重排序服务启动...")
-    run_once(GLOBAL_CONFIG_PATH)
-    
     interval = global_config.get("update_interval_hours", 0)
     web_port = global_config.get("web_port", 8080)
     
-    if interval > 0:
-        if web_port > 0:
-            # 开启内置多用途 Web 共享与 API 服务器
-            web_thread = threading.Thread(target=start_web_server, args=(web_port, "output"), daemon=True)
-            web_thread.start()
-            
-        logging.info(f"服务已进入常驻守护进程模式。每 {interval} 小时自动更新与测速排序一次...")
+    # 异步线程执行解析和更新的后台守护流程
+    def resolver_daemon():
+        logging.info("IPTV 域名解析、多 IP 优选与同名重排序后台任务启动...")
+        # 立即执行初次解析
         try:
-            while True:
-                time.sleep(interval * 3600)
-                logging.info("定时更新触发，开始新一轮解析与同名重排流程...")
-                run_once(GLOBAL_CONFIG_PATH)
+            run_once(GLOBAL_CONFIG_PATH)
+        except Exception as e:
+            logging.error(f"初次解析执行失败: {e}")
+            
+        if interval > 0:
+            logging.info(f"后台更新线程已进入常驻守护进程模式。每 {interval} 小时自动更新与测速排序一次...")
+            try:
+                while True:
+                    time.sleep(interval * 3600)
+                    logging.info("定时更新触发，开始新一轮解析与同名重排流程...")
+                    run_once(GLOBAL_CONFIG_PATH)
+            except KeyboardInterrupt:
+                pass
+        else:
+            logging.info("单次解析与同名重排任务完毕。")
+
+    # 只要启用了 Web 服务，不论是否常驻，我们都立即在后台启动解析线程，而让 Web 服务器启动挂起
+    if web_port > 0:
+        # 1. 启动后台异步解析与更新线程
+        resolver_thread = threading.Thread(target=resolver_daemon, daemon=True)
+        resolver_thread.start()
+        
+        # 2. 主线程立即启动 Web 服务，实现“秒开”
+        logging.info(f"正在立即启动内置 Web 服务器，提供局域网后台与文件订阅服务...")
+        try:
+            start_web_server(web_port, "output")
         except KeyboardInterrupt:
             logging.info("服务被用户手动终止。")
     else:
-        # 单次执行模式下，如果开启了 web 端口，则主线程挂起以对外提供后台管理和文件订阅服务
-        if web_port > 0:
-            logging.info(f"单次解析完成。由于开启了 Web 服务且属于单次模式，主线程将挂起以提供局域网后台与分发...")
-            start_web_server(web_port, "output")
+        # 如果彻底关闭了 Web 服务（web_port == 0）
+        logging.info("由于未启用 Web 服务，将在主线程同步执行解析与测速任务...")
+        if interval > 0:
+            logging.info(f"进入常驻守护进程模式。每 {interval} 小时自动更新与测速排序一次...")
+            try:
+                # 初次运行
+                run_once(GLOBAL_CONFIG_PATH)
+                while True:
+                    time.sleep(interval * 3600)
+                    logging.info("定时更新触发，开始新一轮解析与同名重排流程...")
+                    run_once(GLOBAL_CONFIG_PATH)
+            except KeyboardInterrupt:
+                logging.info("服务被用户手动终止。")
         else:
+            run_once(GLOBAL_CONFIG_PATH)
             logging.info("单次解析与同名重排任务完毕，程序退出。")
 
 if __name__ == "__main__":
