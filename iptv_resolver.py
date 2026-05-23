@@ -73,6 +73,7 @@ global_config = {}
 is_updating_flag = False  # 用于防止并发重复触发解析更新
 config_lock = threading.Lock()  # 用于配置文件读写的线程锁
 update_lock = threading.Lock()  # 用于解析更新任务的互斥锁
+config_update_event = threading.Event()  # 用于唤醒后台更新线程的事件对象
 
 def load_global_config():
     global global_config
@@ -698,6 +699,9 @@ class WebConfigHandler(SimpleHTTPRequestHandler):
                 # 重新加载内存中的全局变量
                 load_global_config()
                 
+                # 瞬时唤醒后台更新守护线程，重算等待周期并应用新配置
+                config_update_event.set()
+                
                 # 动态刷新 Web 端的 next_update_time_str，使其立即响应更新周期的改变
                 global next_update_time_str
                 try:
@@ -739,17 +743,13 @@ class WebConfigHandler(SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps({"status": "success", "message": "已在后台触发一键更新与多源测速排序任务！"}).encode('utf-8'))
             
-            # 后台启动异步线程执行更新
+            # 后台启动异步线程执行更新，由 run_once 内部锁与 is_updating_flag 自行管理状态，防止并发冲突
             def async_update():
-                global is_updating_flag
-                is_updating_flag = True
                 try:
                     logging.info("[Web GUI] 接收到手动触发请求，开始新一轮解析测速重排流程...")
                     run_once(GLOBAL_CONFIG_PATH)
                 except Exception as e:
                     logging.error(f"[Web GUI] 异步触发解析发生异常: {e}")
-                finally:
-                    is_updating_flag = False
                     
             t = threading.Thread(target=async_update)
             t.start()
@@ -759,13 +759,13 @@ class WebConfigHandler(SimpleHTTPRequestHandler):
         self.end_headers()
 
 def start_web_server(port, directory="output"):
-    """多线程内置 HTTP / API 服务器，合并共享目录与 GUI 管理后台"""
-    class TCPServer(socketserver.TCPServer):
+    """多线程并发内置 HTTP / API 服务器，合并共享目录与 GUI 管理后台"""
+    class ThreadingTCPServer(socketserver.ThreadingTCPServer):
         allow_reuse_address = True
         
     try:
         # 使用自定义的 WebConfigHandler 统一拦截 API 接口和静态页面
-        with TCPServer(("", port), WebConfigHandler) as httpd:
+        with ThreadingTCPServer(("", port), WebConfigHandler) as httpd:
             logging.info(f"[微服务 Web 服务器] 启动成功！")
             logging.info(f"👉 局域网 Web 管理配置后台: http://<您的服务器IP>:{port}/")
             logging.info(f"👉 电视/播放器订阅文件夹挂在在当前服务端口下，直接访问: http://<您的服务器IP>:{port}/output/<输出文件名>")
@@ -851,18 +851,29 @@ def main():
         logging.info("后台更新线程已进入常驻守护进程模式，准备接收定时任务。")
         try:
             while True:
-                # 每次睡眠 10 秒，动态感应最新配置的定时周期
-                time.sleep(10)
-                
                 curr_interval = global_config.get("update_interval_hours", 0)
                 if curr_interval <= 0:
+                    # 定时周期已关闭，长久阻塞挂起直到配置变更事件唤醒它，不耗 CPU 资源
+                    config_update_event.wait()
+                    config_update_event.clear()
                     continue
                     
                 now = time.time()
-                if now - last_run_time >= curr_interval * 3600:
+                elapsed = now - last_run_time
+                remaining = curr_interval * 3600 - elapsed
+                
+                if remaining <= 0:
                     logging.info("定时更新触发，开始新一轮解析与同名重排流程...")
                     if run_once(GLOBAL_CONFIG_PATH):
                         last_run_time = time.time()
+                    continue
+                    
+                # 挂起等待剩余的时间，或者被配置保存接口的 Event 瞬间唤醒 (0 CPU 占用)
+                triggered = config_update_event.wait(timeout=remaining)
+                if triggered:
+                    # 被 Event 唤醒，清除信号，重新读取最新配置参数并重新规划时间
+                    config_update_event.clear()
+                    logging.info("接收到全局配置更新事件，已瞬时重置定时周期。")
         except KeyboardInterrupt:
             pass
 
@@ -889,15 +900,26 @@ def main():
                 run_once(GLOBAL_CONFIG_PATH)
                 last_run_time = time.time()
                 while True:
-                    time.sleep(10)
                     curr_interval = global_config.get("update_interval_hours", 0)
                     if curr_interval <= 0:
+                        config_update_event.wait()
+                        config_update_event.clear()
                         continue
+                        
                     now = time.time()
-                    if now - last_run_time >= curr_interval * 3600:
+                    elapsed = now - last_run_time
+                    remaining = curr_interval * 3600 - elapsed
+                    
+                    if remaining <= 0:
                         logging.info("定时更新触发，开始新一轮解析与同名重排流程...")
                         if run_once(GLOBAL_CONFIG_PATH):
                             last_run_time = time.time()
+                        continue
+                        
+                    triggered = config_update_event.wait(timeout=remaining)
+                    if triggered:
+                        config_update_event.clear()
+                        logging.info("接收到全局配置更新事件，已瞬时重置定时周期。")
             except KeyboardInterrupt:
                 logging.info("服务被用户手动终止。")
         else:
