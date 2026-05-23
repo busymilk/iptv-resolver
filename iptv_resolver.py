@@ -8,8 +8,11 @@ import json
 import socket
 import logging
 import argparse
+import threading
 import subprocess
 import ipaddress
+import socketserver
+from http.server import SimpleHTTPRequestHandler
 from urllib.parse import urlparse, urlunparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -50,7 +53,7 @@ import requests
 try:
     import dns.resolver
 except ImportError:
-    pass  # 如果没有使用自定义 DNS，就不强制需要 dns.resolver
+    pass
 
 def is_ip(host):
     """判断给定的 host 是否已经是 IP 地址（支持 IPv4 和带中括号的 IPv6）"""
@@ -216,14 +219,13 @@ def resolve_and_select_best(domain_key, dns_servers, mode, use_doh, do_speed_tes
                     best_ip = ip
                     best_type = 'v6'
         else:
-            # 只有单个 IP 或未开启测速，直接取第一个
             best_ip = ips_v6[0]
             best_type = 'v6'
-            best_time = 0.001  # 视为极快
+            best_time = 0.001
 
-    # B. 回退尝试 IPv4
-    # 情况一：mode 允许 IPv4，且 IPv6 没解析出；
-    # 情况二：虽然解析出了 IPv6，但在开启测速的情况下所有的 IPv6 全都超时不通，需要进行 IPv4 救急。
+    # B. 尝试 IPv4
+    # - 若 mode 为 prefer-ipv6，且 IPv6 没解析到，或者虽然解析到但全部 IPv6 测速超时不通，回退尝试 IPv4
+    # - 若 mode 为 ipv4-only 且存在 IPv4
     if not best_ip and mode in ["prefer-ipv6", "ipv4-only"] and ips_v4:
         if do_speed_test and len(ips_v4) > 1:
             logging.debug(f"对域名 {domain} 拥有的 {len(ips_v4)} 个 IPv4 地址发起连接测速优选...")
@@ -244,7 +246,7 @@ def resolve_and_select_best(domain_key, dns_servers, mode, use_doh, do_speed_tes
         if mode in ["prefer-ipv6", "ipv6-only"] and ips_v6:
             best_ip = ips_v6[0]
             best_type = 'v6'
-        elif ips_v4:
+        elif mode in ["prefer-ipv6", "ipv4-only"] and ips_v4:
             best_ip = ips_v4[0]
             best_type = 'v4'
             
@@ -252,7 +254,6 @@ def resolve_and_select_best(domain_key, dns_servers, mode, use_doh, do_speed_tes
 
 def download_source(url):
     """从网络下载 IPTV 列表，返回内容文本"""
-    # 智能转换 GitHub 网页链接为 Raw 链接
     if "github.com" in url and "/blob/" in url:
         url = url.replace("github.com", "raw.githubusercontent.com").replace("/blob/", "/")
         logging.info(f"检测到 GitHub 网页链接，已自动转换为 Raw 链接: {url}")
@@ -366,7 +367,10 @@ def process_source(source_cfg, global_cfg):
     url = source_cfg.get("url")
     output_filename = source_cfg.get("output")
     
-    logging.info(f"=== 开始处理数据源 [{name}] ===")
+    # 局部优先级模式：如果数据源配置中指定了 mode，则覆盖全局的 mode 配置
+    mode = source_cfg.get("mode", global_cfg.get("mode", "prefer-ipv6"))
+    
+    logging.info(f"=== 开始处理数据源 [{name}] (解析策略: {mode.upper()}) ===")
     
     content = download_source(url)
     if not content:
@@ -395,7 +399,6 @@ def process_source(source_cfg, global_cfg):
     # 2. 并发解析与测速优选
     workers = global_cfg.get("workers", 50)
     dns_servers = global_cfg.get("dns_servers", [])
-    mode = global_cfg.get("mode", "prefer-ipv6")
     use_doh = global_cfg.get("use_doh", True)
     do_speed_test = global_cfg.get("ip_speed_test", True)
     
@@ -464,7 +467,7 @@ def process_source(source_cfg, global_cfg):
                                 f.write(f"{el['name']},{el['url']}\n")
                         else:
                             filtered_count += 1
-                            logging.debug(f"频道 [{el.get('info') or el.get('name')}] 所有 IP 均测速不可达，已被过滤")
+                            logging.debug(f"频道 [{el.get('info') or el.get('name')}] 解析/测速失败，已被过滤")
                 except Exception as e:
                     logging.error(f"替换 URL 发生异常: {e}")
                     if keep_unresolved:
@@ -473,6 +476,25 @@ def process_source(source_cfg, global_cfg):
     logging.info(f"数据源 [{name}] 处理完毕。")
     logging.info(f"解析并选出最优 IP 频道: {resolved_count} 个，失败被过滤频道: {filtered_count} 个")
     logging.info(f"结果已成功输出到: {output_path}\n")
+
+def start_web_server(port, directory="output"):
+    """多线程内置 HTTP 共享服务器，将 output 目录直接广播到局域网"""
+    class Handler(SimpleHTTPRequestHandler):
+        def __init__(self, *args, **kwargs):
+            # 将 Handler 重定向为专门提供 directory 指定目录的文件服务
+            super().__init__(*args, directory=directory, **kwargs)
+            
+    class TCPServer(socketserver.TCPServer):
+        # 允许端口快速释放与复用，防止重启时报 Address already in use
+        allow_reuse_address = True
+        
+    try:
+        with TCPServer(("", port), Handler) as httpd:
+            logging.info(f"[局域网共享] 服务已成功启动！")
+            logging.info(f"👉 局域网电视/播放器订阅地址: http://<您的服务器IP>:{port}/<输出文件名>")
+            httpd.serve_forever()
+    except Exception as e:
+        logging.error(f"启动局域网共享 Web 服务失败: {e}")
 
 def run_once(config_path):
     """单次运行流程"""
@@ -503,7 +525,7 @@ def main():
     parser.add_argument("-c", "--config", default="config.json", help="配置文件路径 (默认: config.json)")
     args = parser.parse_args()
     
-    logging.info("IPTV 域名解析服务启动...")
+    logging.info("IPTV 域名解析与 IP 优选服务启动...")
     run_once(args.config)
     
     try:
@@ -512,18 +534,30 @@ def main():
     except Exception:
         cfg = {}
         
+    # 局域网 Web 共享服务器启动 (在常驻运行模式下)
     interval = cfg.get("update_interval_hours", 0)
+    web_port = cfg.get("web_port", 0)
+    
     if interval > 0:
+        if web_port > 0:
+            web_thread = threading.Thread(target=start_web_server, args=(web_port, "output"), daemon=True)
+            web_thread.start()
+            
         logging.info(f"服务已进入常驻守护进程模式。每 {interval} 小时自动更新一次...")
         try:
             while True:
                 time.sleep(interval * 3600)
-                logging.info("定时更新触发，开始新一轮解析流程...")
+                logging.info("定时更新触发，开始新一轮解析与测速流程...")
                 run_once(args.config)
         except KeyboardInterrupt:
             logging.info("服务被用户手动终止。")
     else:
-        logging.info("单次解析任务执行完毕，程序退出。")
+        # 单次执行模式下，如果开启了 web 端口，则需要挂起主线程以提供 Web 服务，否则主线程退出就无法访问了
+        if web_port > 0:
+            logging.info(f"单次解析完成。由于开启了局域网共享且属于单次模式，主线程将挂起以提供 Web 服务...")
+            start_web_server(web_port, "output")
+        else:
+            logging.info("单次解析任务执行完毕，程序退出。")
 
 if __name__ == "__main__":
     main()

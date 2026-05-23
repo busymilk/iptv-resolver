@@ -6,11 +6,18 @@
   "keep_unresolved": false,
   "ip_speed_test": true,
   "workers": 20,
+  "web_port": 8080,
   "sources": [
     {
       "name": "zilong7728_best_sorted",
       "url": "https://github.com/zilong7728/Collect-IPTV/blob/main/best_sorted.m3u",
       "output": "best_sorted_resolved.m3u"
+    },
+    {
+      "name": "ipv6_only_test",
+      "url": "https://live.zbds.top/tv/iptv6.m3u",
+      "output": "ipv6_only_test.m3u",
+      "mode": "ipv6-only"
     }
   ]
 }

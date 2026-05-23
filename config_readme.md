@@ -1,6 +1,6 @@
-# IPTV 解析器配置文件 (config.json) 使用指南 (测速优选版)
+# IPTV 解析器配置文件 (config.json) 使用指南 (局域网共享+单源模式版)
 
-本文件旨在为您详细介绍 `config.json` 中各个参数的含义、推荐配置，并提供常见使用场景下的配置模板，帮助您轻松管理和使用 IPTV 域名解析与 IP 优选微服务。
+本文件旨在为您详细介绍 `config.json` 中各个参数的含义、推荐配置，并提供常见使用场景下的配置模板，帮助您轻松管理和使用 IPTV 域名解析、IP 优选与局域网共享微服务。
 
 ---
 
@@ -17,11 +17,18 @@
   "keep_unresolved": false,
   "ip_speed_test": true,
   "workers": 50,
+  "web_port": 8080,
   "sources": [
     {
       "name": "zilong7728_best_sorted",
       "url": "https://github.com/zilong7728/Collect-IPTV/blob/main/best_sorted.m3u",
       "output": "best_sorted_resolved.m3u"
+    },
+    {
+      "name": "ipv6_only_test",
+      "url": "https://live.zbds.top/tv/iptv6.m3u",
+      "output": "ipv6_only_test.m3u",
+      "mode": "ipv6-only"
     }
   ]
 }
@@ -31,39 +38,35 @@
 
 ## 核心配置参数详解
 
-### 1. 域名解析与 IP 优选 (DNS & Speed Test Settings)
+### 1. 局域网 Web 共享服务器 (LAN Web Sharing)
 
 | 参数名 | 默认值 | 推荐配置 | 参数释义与使用建议 |
 | :--- | :--- | :--- | :--- |
-| **`use_doh`** | `true` | `true` (推荐) | **DNS-over-HTTPS (DoH) 引擎开关**。<br>开启后将通过安全的加密 HTTP 连接向阿里云 DoH 发起解析。**极其推荐在开启了 Clash 等本地代理的环境下使用**，能 100% 避开代理的 Fake-IP (198.18.x.x) 劫持污染，获取到绝对真实的公网 IP。 |
-| **`ip_speed_test`**| `true` | `true` (推荐) | **IP 优选与连接测速开关**。<br>当域名解析出多个公网 IP（常见于各类 CDN 加速源）时，**系统会并行对这些 IP 在您的本地网络环境下进行 TCP 连接握手测速**，并自动挑选响应最快、最稳定的那个 IP 替换入 URL。<br>- **死链过滤**：如果开启了测速，且 `keep_unresolved` 为 `false`，测速不通的无效 IP 会被直接过滤。这天然起到了**剔除死链频道**的作用！<br>- **极致容错保底**：若您的网络波动导致所有 IP 均握手超时，系统会自动回退选取第一个解析 IP，确保频道不被误杀，具有 100% 可用性。 |
-| **`dns_servers`** | `[]` | `[]` 或自定义 | **传统本地/公网 DNS 服务器列表**（传统 UDP 解析）。<br>- 若您需要解析局域网内的专网域名（如 AdGuard Home, 软路由 local 域名），可在此配置您的内网 DNS（如 `["192.168.1.1"]`）。<br>- **注意**：一旦在此处填入任何 IP，系统会**自动停用 DoH**，转为向您填写的 DNS 服务器发起解析。 |
-| **`mode`** | `"prefer-ipv6"` | `"prefer-ipv6"` | **智能解析模式**，可选值如下：<br>- `"prefer-ipv6"`（默认）：**优先解析 IPv6**。如果域名能解析到 IPv6 地址，则优先对 IPv6 候选集进行测速优选；若所有 IPv6 均不通或解析不到，则自动降级对该域名的 IPv4 候选集进行测速并替换。<br>- `"ipv6-only"`：仅解析、测速并保留 IPv6 链接，无 IPv6 则过滤该频道。<br>- `"ipv4-only"`：仅解析、测速并保留 IPv4 链接。 |
+| **`web_port`** | `0` | `8080` (推荐) | **局域网共享 HTTP 端口**。<br>- 若设为 `0`：不开启共享服务。<br>- 若设为大于 `0` 的端口数（如 `8080`）：微服务会在后台自动拉起一个轻量级多线程 Web 文件服务器，**把整个 `output/` 文件夹广播到您的家庭局域网中**！<br>- **电视访问极简地址**：您的电视盒子、小薇直播、Kodi 或 DIYP 播放器，可以直接填写 `http://<您运行本服务的机器IP>:8080/<输出文件名>` (例如: `http://192.168.1.100:8080/best_sorted_resolved.m3u`) 自动拉取更新后的列表进行播放！ |
 
-### 2. 系统执行参数 (System Settings)
+### 2. 精细化数据源解析策略 (Per-Source Resolution Settings)
+
+在 **`sources`** 数据源列表数组中，您不仅可以为每个源配置 `name`, `url` 和 `output`，还能为特定数据源设置 **专属的解析策略**：
+
+* **局部模式字段：`mode`**
+  - **默认值**：如果不配置，该数据源会继承全局的 `mode`（默认优先 IPv6，降级 IPv4）。
+  - **可选覆盖值**：`"prefer-ipv6"`、`"ipv6-only"`、`"ipv4-only"`。
+  - **忽略与强制忽略策略**：当您将某个数据源局部配置为 `"ipv6-only"`（或 `"ipv4-only"`）时，**系统会对该源进行绝对的协议限制**。一旦域名无法解析出您要求的 IP 类型（比如选了 ipv6-only，但域名只有 ipv4 地址），**该链接会被直接当作解析失败过滤掉，而不会走“降级备用”逻辑**。这完美适应了您针对不同源进行纯 IPv6 / 纯 IPv4 划分过滤的高阶需求！
+
+### 3. 全局解析与测速 (Global DNS & Speed Test Settings)
 
 | 参数名 | 默认值 | 推荐配置 | 参数释义与使用建议 |
 | :--- | :--- | :--- | :--- |
-| **`update_interval_hours`**| `0` | `12` 或 `24` | **定时自动更新周期**（小时数）。<br>- 如果设置为 `0`：服务在运行完一次完整的下载、解析、测速和写出流程后，程序会**直接退出**（适合单次手动运行或配合外部 Crontab 定时调度）。<br>- 如果设置为大于 `0` 的正数（如 `12`）：程序启动后将**常驻后台运行**（作为 Docker 守护进程），每隔指定小时自动从网络下载并更新一次列表，极力推荐常驻部署时使用。 |
-| **`keep_unresolved`** | `false` | `false` | **解析/测速失败频道的处理策略**。<br>- `false`（推荐）：自动将所有“解析失败或所有IP测速均不通”的失效频道在输出文件中**过滤丢弃**，确保您最终生成的播放列表 100% 极速可用。<br>- `true`：对于失效的域名，在输出文件中保留原域名链接不变。 |
-| **`workers`** | `50` | `50` | **并发解析与测速线程数**。多线程并行发起 DNS 解析与 TCP 握手测速，大幅缩短等待时间。通常对于 200 个唯一连接的列表，设置为 `50` 可以在 10~15 秒内轻松搞定全部解析与测速优选。 |
-
-### 3. 数据源参数 (Sources Settings)
-
-**`sources`** 是一个 JSON 数组，您可以在其中配置任意多个不同的 IPTV 节目列表网络链接。每个源包含 3 个配置项：
-
-- **`name`**：自定义的数据源别名，仅用于日志打印中便于区分。
-- **`url`**：网络订阅链接地址。
-  - **支持格式**：`.m3u` / `.m3u8` / `.txt` 等类型的文件。
-  - **GitHub 自动转换**：工具已为您内置了 GitHub URL 翻译器。如果您填入的是 GitHub 网页端的浏览链接（如含有 `/blob/`），系统在下载前会**自动将其智能转换为 raw 纯文本链接**（如 `raw.githubusercontent.com`），无需您手动操作！
-- **`output`**：解析替换完成后，输出到本地 `/app/output/` 目录下的目标文件名（如 `iptv_v6.m3u` 或 `channels.txt`）。**系统会根据输入源的内容，自动判断并完美保留其原有的 M3U 或 TXT 格式**。
+| **`use_doh`** | `true` | `true` | **DNS-over-HTTPS (DoH) 引擎开关**。<br>通过安全的加密连接向阿里云 DoH 发起解析。**极其推荐在开启了 Clash 的环境使用**，能 100% 避开代理的 Fake-IP (198.18.x.x) 劫持污染，获取到绝对真实的公网 IP。 |
+| **`ip_speed_test`**| `true` | `true` | **IP 优选与连接测速开关**。<br>多 IP 候选集会在您的本地网络发起多线程 TCP 连接延迟测速，自动挑选延迟最低、最稳定的那个 IP 替换入播放 URL。 |
+| **`keep_unresolved`** | `false` | `false` | **解析/测速失败策略**。<br>设为 `false`（推荐）时，解析失败或测速全部超时的无效频道会被自动过滤，确保播放列表 100% 极速可用。 |
 
 ---
 
-## 典型应用场景配置模板
+## 典型配置场景推荐
 
-### 场景 A：绕过代理污染 + 测速优选 + 优先 IPv6（最推荐的公网更新模板）
-> 适用于在本地开启了代理的宿主机，或部署在具有公网双栈环境的服务器（如 NAS、VPS），想要生成经过网速优选的高品质真实播放列表。
+### 🎯 场景配置：混合源精细化过滤 + 局域网电视一键订阅 (终极推荐)
+> 适用于家里有多路网络，其中有 M3U 源只在 IPv6 下稳定，而有 TXT 源只需 IPv4 解析，且想直接在电视上输入局域网地址进行秒级更新的场景。
 
 ```json
 {
@@ -74,34 +77,27 @@
   "keep_unresolved": false,
   "ip_speed_test": true,
   "workers": 50,
+  "web_port": 8080,
   "sources": [
     {
-      "name": "cctv_main",
+      "name": "cctv_dual_stack",
       "url": "https://github.com/zilong7728/Collect-IPTV/blob/main/best_sorted.m3u",
-      "output": "cctv_resolved.m3u"
-    }
-  ]
-}
-```
-
-### 场景 B：软路由/局域网专网域名解析（适合有特殊内网 DNS 需求的用户）
-> 适用于需要解析局域网特定专网域名（如 AdGuard Home, 软路由 hosts），不担心公网代理 Fake-IP 污染的环境。
-
-```json
-{
-  "dns_servers": ["192.168.1.1", "119.29.29.29"],
-  "use_doh": false,
-  "mode": "prefer-ipv6",
-  "update_interval_hours": 24,
-  "keep_unresolved": false,
-  "ip_speed_test": true,
-  "workers": 30,
-  "sources": [
+      "output": "cctv_v6_v4.m3u"
+    },
     {
-      "name": "local_source",
-      "url": "http://router.local/list.m3u",
-      "output": "local_resolved.m3u"
+      "name": "strict_ipv6_only",
+      "url": "https://live.zbds.top/tv/iptv6.m3u",
+      "output": "cctv_only_v6.m3u",
+      "mode": "ipv6-only"
     }
   ]
 }
 ```
+
+#### 📺 在电视端（如 DIYP, Kodi）的配置方法：
+假如您运行该 Docker 容器的服务器（如群晖 NAS、软路由）的局域网 IP 是 `192.168.31.5`：
+1. **电视配置源一 (双栈优选源)**：
+   `http://192.168.31.5:8080/cctv_v6_v4.m3u`
+2. **电视配置源二 (纯 IPv6 强制过滤源)**：
+   `http://192.168.31.5:8080/cctv_only_v6.m3u`
+3. 容器常驻后台，电视每次启动都会自动从您的这台本地服务器拉取经过最新高并发优选测速后的纯净公网链接，彻底告别卡顿！

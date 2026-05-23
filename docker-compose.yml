@@ -5,6 +5,8 @@ services:
     build: .
     container_name: iptv-resolver
     restart: unless-stopped
+    ports:
+      - "8080:8080" # 将容器内的 8080 局域网端口暴露给电视等局域网设备
     volumes:
       - ./config.json:/app/config.json
       - ./output:/app/output
