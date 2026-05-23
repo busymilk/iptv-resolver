@@ -66,6 +66,18 @@
       "name": "zilong7728_best_sorted",
       "url": "https://github.com/zilong7728/Collect-IPTV/blob/main/best_sorted.m3u",
       "output": "best_sorted_resolved.m3u"
+    },
+    {
+      "name": "strict_ipv6_only",
+      "url": "https://live.zbds.top/tv/iptv6.m3u",
+      "output": "cctv_only_v6.m3u",
+      "mode": "ipv6-only"
+    },
+    {
+      "name": "strict_ipv4_only",
+      "url": "https://live.zbds.top/tv/iptv6.m3u",
+      "output": "cctv_only_v4.m3u",
+      "mode": "ipv4-only"
     }
   ]
 }

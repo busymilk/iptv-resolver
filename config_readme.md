@@ -29,6 +29,12 @@
       "url": "https://live.zbds.top/tv/iptv6.m3u",
       "output": "ipv6_only_test.m3u",
       "mode": "ipv6-only"
+    },
+    {
+      "name": "ipv4_only_test",
+      "url": "https://live.zbds.top/tv/iptv6.m3u",
+      "output": "ipv4_only_test.m3u",
+      "mode": "ipv4-only"
     }
   ]
 }
@@ -40,8 +46,8 @@
 
 ### 1. 同名电视频道“多视频源自动测速重排序 (Speed Auto-Sorting)”
 本服务集成了业界领先的 **“双层 IP 优选与多源重排算法”**：
-- **第一层：域名多 IP 优选** —— 对单个链接的域名解析出的多个 IP，连接 TCP 测速并提取最快 IP 替换域名。
-- **第二层：同名电视频道多源重排序** —— 当您的订阅源中**同一个电视台存在多个不同的视频源链接**（如连续出现多个同名的 `CCTV-1`）时，系统会自动将它们进行**同名聚合**，在所有链接完成首轮 IP 解析和测速后，**根据它们的延迟耗时（秒）进行升序重排序（从小到大，速度最快最稳定的链接排在最前面）**。这保证了播放器在加载时秒开首选，并能按网速顺次备用切换！
+- **第一层 (域名级)**：对单个链接的域名解析出的多个 IP，连接 TCP 测速并提取最快 IP 替换域名。
+- **第二层 (源级别)**：当您的订阅源中**同一个电视台存在多个不同的视频源链接**（如连续出现多个同名的 `CCTV-1`）时，系统会自动进行**同名聚合**，在所有链接完成首轮 IP 解析和测速后，**根据它们的延迟耗时（秒）进行升序重排序（速度最快最稳定的链接排在最前面）**。这保证了播放器在加载时秒开首选，并能按网速顺次备用切换！
 
 ### 2. 内置可视化 Web 管理配置后台 (Visual Config Web GUI)
 服务内置了多线程 Web 服务器与 API 控制后端。无需额外配置 Nginx、Caddy，也无需手动登录 SSH 修改配置文件！
@@ -76,3 +82,52 @@
 | **`use_doh`** | `true` | `true` | **DNS-over-HTTPS (DoH) 引擎开关**。<br>开启后将通过安全的加密 HTTP 连接向阿里云 DoH 发起解析。**极其推荐在开启了 Clash 等本地代理的环境下使用**，能 100% 避开代理的 Fake-IP (198.18.x.x) 劫持污染，获取到绝对真实的公网 IP。 |
 | **`ip_speed_test`**| `true` | `true` | **IP 优选与连接测速开关**。<br>多 IP 候选集会在您的本地网络发起多线程 TCP 连接延迟测速，自动挑选延迟最低、最稳定的那个 IP 替换入播放 URL。 |
 | **`keep_unresolved`** | `false` | `false` | **解析/测速失败策略**。<br>设为 `false`（推荐）时，解析失败或测速全部超时的无效频道会被自动过滤，确保播放列表 100% 极速可用。 |
+
+---
+
+## 典型配置场景推荐
+
+### 🎯 场景配置：混合源精细化过滤 + 局域网电视一键订阅 (终极推荐)
+> 适用于家里有多路网络，其中有 M3U 源只在 IPv6 下稳定，而有 TXT 源只需 IPv4 解析，且想直接在电视上输入局域网地址进行秒级更新的场景。
+
+```json
+{
+  "dns_servers": [],
+  "use_doh": true,
+  "mode": "prefer-ipv6",
+  "update_interval_hours": 12,
+  "keep_unresolved": false,
+  "ip_speed_test": true,
+  "workers": 50,
+  "web_port": 8080,
+  "sources": [
+    {
+      "name": "cctv_dual_stack",
+      "url": "https://github.com/zilong7728/Collect-IPTV/blob/main/best_sorted.m3u",
+      "output": "cctv_v6_v4.m3u"
+    },
+    {
+      "name": "strict_ipv6_only",
+      "url": "https://live.zbds.top/tv/iptv6.m3u",
+      "output": "cctv_only_v6.m3u",
+      "mode": "ipv6-only"
+    },
+    {
+      "name": "strict_ipv4_only",
+      "url": "https://live.zbds.top/tv/iptv6.m3u",
+      "output": "cctv_only_v4.m3u",
+      "mode": "ipv4-only"
+    }
+  ]
+}
+```
+
+#### 📺 在电视端（如 DIYP, Kodi）的配置方法：
+假如您运行该 Docker 容器的服务器（如群晖 NAS、软路由）的局域网 IP 是 `192.168.31.5`：
+1. **电视配置源一 (双栈优选源)**：
+   `http://192.168.31.5:8080/cctv_v6_v4.m3u`
+2. **电视配置源二 (纯 IPv6 强制过滤源)**：
+   `http://192.168.31.5:8080/cctv_only_v6.m3u`
+3. **电视配置源三 (纯 IPv4 强制过滤源)**：
+   `http://192.168.31.5:8080/cctv_only_v4.m3u`
+4. 容器常驻后台，电视每次启动都会自动从您的这台本地服务器拉取经过最新高并发优选测速后的纯净公网链接，彻底告别卡顿！

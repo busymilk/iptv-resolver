@@ -18,6 +18,12 @@
       "url": "https://live.zbds.top/tv/iptv6.m3u",
       "output": "ipv6_only_test.m3u",
       "mode": "ipv6-only"
+    },
+    {
+      "name": "ipv4_only_test",
+      "url": "https://live.zbds.top/tv/iptv6.m3u",
+      "output": "ipv4_only_test.m3u",
+      "mode": "ipv4-only"
     }
   ]
 }
