@@ -17,7 +17,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 复制源码和静态网页文件
-COPY iptv_resolver.py admin.html ./
+COPY iptv_resolver.py index.html ./
 
 # 启动服务
 CMD ["python", "iptv_resolver.py"]

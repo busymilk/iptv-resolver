@@ -1,6 +1,5 @@
 {
   "dns_servers": [],
-  "use_doh": true,
   "update_interval_hours": 0,
   "keep_unresolved": false,
   "ip_speed_test": true,

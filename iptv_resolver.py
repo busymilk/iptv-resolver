@@ -118,42 +118,54 @@ def test_ip_speed(ip, port, timeout=1.2):
     except Exception:
         return float('inf')
 
-def resolve_domain_doh_all(domain, mode="prefer-ipv6"):
-    """使用阿里云 DNS-over-HTTPS (DoH) API 获取域名所有的 IPv6 和 IPv4 解析地址列表，防 Fake-IP 污染"""
+def resolve_domain_doh(domain, doh_url, mode="prefer-ipv6"):
+    """
+    通用 DNS-over-HTTPS (DoH) API 解析域名获取所有 IP 列表。
+    支持符合 RFC 8484 或者是常用 JSON 格式的 DoH API (如阿里云、腾讯云、Cloudflare、Google 等)
+    """
     ips_v6 = []
     ips_v4 = []
-
-    # 1. 解析 IPv6 (AAAA 记录, type=28)
+    
+    base_url = doh_url.strip()
+    if "/resolve" not in base_url and "/dns-query" not in base_url:
+        base_url = base_url.rstrip('/') + "/resolve"
+    elif "/dns-query" in base_url and "resolve" not in base_url:
+        # 允许在 JSON API 中无缝转换
+        base_url = base_url.replace("/dns-query", "/resolve")
+        
+    headers = {'accept': 'application/dns-json'}
+    
+    # 1. 解析 IPv6
     if mode in ["prefer-ipv6", "ipv6-only"]:
         try:
-            url = f"https://dns.alidns.com/resolve?name={domain}&type=AAAA"
-            resp = http_session.get(url, timeout=3.0)
+            url = f"{base_url}?name={domain}&type=AAAA"
+            resp = http_session.get(url, headers=headers, timeout=3.0)
             if resp.status_code == 200:
                 data = resp.json()
                 if "Answer" in data:
                     for ans in data["Answer"]:
                         if ans.get("type") == 28 and ans.get("data"):
-                            ips_v6.append(ans["data"])
+                            ips_v6.append(ans["data"].strip())
         except Exception as e:
-            logging.debug(f"DoH AAAA 解析 {domain} 出错: {e}")
+            logging.debug(f"DoH AAAA 解析 {domain} 出错 (Server: {doh_url}): {e}")
 
-    # 2. 解析 IPv4 (A 记录, type=1)
+    # 2. 解析 IPv4
     if mode in ["prefer-ipv6", "ipv4-only"] or (mode == "prefer-ipv6" and not ips_v6):
         try:
-            url = f"https://dns.alidns.com/resolve?name={domain}&type=A"
-            resp = http_session.get(url, timeout=3.0)
+            url = f"{base_url}?name={domain}&type=A"
+            resp = http_session.get(url, headers=headers, timeout=3.0)
             if resp.status_code == 200:
                 data = resp.json()
                 if "Answer" in data:
                     for ans in data["Answer"]:
                         if ans.get("type") == 1 and ans.get("data"):
-                            ips_v4.append(ans["data"])
+                            ips_v4.append(ans["data"].strip())
         except Exception as e:
-            logging.debug(f"DoH A 解析 {domain} 出错: {e}")
-
+            logging.debug(f"DoH A 解析 {domain} 出错 (Server: {doh_url}): {e}")
+            
     return ips_v6, ips_v4
 
-def resolve_domain_all(domain, dns_servers=None, mode="prefer-ipv6", use_doh=True):
+def resolve_domain_all(domain, dns_servers=None, mode="prefer-ipv6"):
     """
     智能解析域名，返回该域名对应的所有 IP 列表：(ips_v6, ips_v4)
     """
@@ -164,58 +176,77 @@ def resolve_domain_all(domain, dns_servers=None, mode="prefer-ipv6", use_doh=Tru
         else:
             return [], [h]
 
-    # 1. 优先使用 DoH（若启用且无自定义传统 DNS）
-    if use_doh and not dns_servers:
-        ips_v6, ips_v4 = resolve_domain_doh_all(domain, mode)
-        if ips_v6 or ips_v4:
-            return ips_v6, ips_v4
+    # 如果 dns_servers 为空，默认使用公网阿里和腾讯的 DoH 组合作为防 Fake-IP 劫持保底
+    if not dns_servers:
+        dns_servers = [
+            "https://dns.alidns.com/resolve",
+            "https://doh.pub/resolve"
+        ]
 
     ips_v6 = []
     ips_v4 = []
 
-    # 2. 使用自定义 DNS 服务器解析 (传统 UDP/TCP 方式)
-    if dns_servers:
+    # 区分 DoH 服务和普通 DNS 服务
+    doh_servers = [s for s in dns_servers if s.startswith("https://") or s.startswith("http://")]
+    traditional_servers = [s for s in dns_servers if not (s.startswith("https://") or s.startswith("http://"))]
+
+    # 1. 优先使用 DoH 解析
+    for doh_url in doh_servers:
+        try:
+            v6, v4 = resolve_domain_doh(domain, doh_url, mode)
+            if v6 or v4:
+                ips_v6.extend(v6)
+                ips_v4.extend(v4)
+        except Exception as e:
+            logging.debug(f"DoH 节点 {doh_url} 解析异常: {e}")
+
+    # 2. 如果没有解析到结果，或者根本没有配置 DoH，使用传统自定义 DNS 服务器解析
+    if (not ips_v6 and not ips_v4) and traditional_servers:
         try:
             resolver = dns.resolver.Resolver(configure=False)
-            resolver.nameservers = dns_servers
+            resolver.nameservers = traditional_servers
             resolver.timeout = 2.0
             resolver.lifetime = 2.0
 
             if mode in ["prefer-ipv6", "ipv6-only"]:
                 try:
                     answers = resolver.resolve(domain, 'AAAA')
-                    ips_v6 = [str(rdata) for rdata in answers]
+                    ips_v6.extend([str(rdata) for rdata in answers])
                 except Exception:
                     pass
 
             if mode in ["prefer-ipv6", "ipv4-only"] or (mode == "prefer-ipv6" and not ips_v6):
                 try:
                     answers = resolver.resolve(domain, 'A')
-                    ips_v4 = [str(rdata) for rdata in answers]
+                    ips_v4.extend([str(rdata) for rdata in answers])
                 except Exception:
                     pass
         except Exception as e:
             logging.debug(f"自定义 DNS 解析 {domain} 出错: {e}")
-    
-    # 3. 使用系统默认 DNS 解析
+
+    # 3. 如果还是没有解析到结果，使用系统默认 DNS 解析
     if not ips_v6 and not ips_v4:
         if mode in ["prefer-ipv6", "ipv6-only"]:
             try:
                 results = socket.getaddrinfo(domain, None, socket.AF_INET6)
-                ips_v6 = list(set([r[4][0] for r in results if r[4][0]]))
+                ips_v6.extend(list(set([r[4][0] for r in results if r[4][0]])))
             except Exception:
                 pass
         
         if mode in ["prefer-ipv6", "ipv4-only"] or (mode == "prefer-ipv6" and not ips_v6):
             try:
                 results = socket.getaddrinfo(domain, None, socket.AF_INET)
-                ips_v4 = list(set([r[4][0] for r in results if r[4][0]]))
+                ips_v4.extend(list(set([r[4][0] for r in results if r[4][0]])))
             except Exception:
                 pass
 
+    # 去重且保持过滤可能的空字符
+    ips_v6 = list(set([ip for ip in ips_v6 if ip]))
+    ips_v4 = list(set([ip for ip in ips_v4 if ip]))
+    
     return ips_v6, ips_v4
 
-def resolve_and_select_best(domain_key, dns_servers, mode, use_doh, do_speed_test=True):
+def resolve_and_select_best(domain_key, dns_servers, mode, do_speed_test=True):
     """
     并发解析域名，并通过连接测速，在解析到的多个 IP 中选出延迟最小、最稳定的最优 IP。
     domain_key: (domain, port, scheme)
@@ -224,7 +255,7 @@ def resolve_and_select_best(domain_key, dns_servers, mode, use_doh, do_speed_tes
     domain, port, scheme = domain_key
     
     # 1. 域名解析获取所有 IP 候选列表
-    ips_v6, ips_v4 = resolve_domain_all(domain, dns_servers, mode, use_doh)
+    ips_v6, ips_v4 = resolve_domain_all(domain, dns_servers, mode)
     if not ips_v6 and not ips_v4:
         return None, None, float('inf')
         
@@ -422,14 +453,13 @@ def process_source(source_cfg, global_cfg):
     # 2. 并发解析与测速优选
     workers = global_cfg.get("workers", 50)
     dns_servers = global_cfg.get("dns_servers", [])
-    use_doh = global_cfg.get("use_doh", True)
     do_speed_test = global_cfg.get("ip_speed_test", True)
     
     dns_cache = {} # (domain, port, scheme) -> (ip, ip_type, speed_cost)
     
     with ThreadPoolExecutor(max_workers=workers) as executor:
         future_to_key = {
-            executor.submit(resolve_and_select_best, key, dns_servers, mode, use_doh, do_speed_test): key 
+            executor.submit(resolve_and_select_best, key, dns_servers, mode, do_speed_test): key 
             for key in domain_keys_to_resolve
         }
         for future in as_completed(future_to_key):
@@ -588,10 +618,10 @@ class WebConfigHandler(SimpleHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        # 根目录重定向到 admin.html 配置后台
-        if self.path == "/" or self.path == "/admin":
+        # 将 /admin 或 /admin.html 重定向到根目录 / (由 index.html 自动伺服)
+        if self.path in ["/admin", "/admin.html"]:
             self.send_response(302)
-            self.send_header('Location', '/admin.html')
+            self.send_header('Location', '/')
             self.end_headers()
             return
             
@@ -689,7 +719,7 @@ def start_web_server(port, directory="output"):
         # 使用自定义的 WebConfigHandler 统一拦截 API 接口和静态页面
         with TCPServer(("", port), WebConfigHandler) as httpd:
             logging.info(f"[微服务 Web 服务器] 启动成功！")
-            logging.info(f"👉 局域网 Web 管理配置后台: http://<您的服务器IP>:{port}/admin")
+            logging.info(f"👉 局域网 Web 管理配置后台: http://<您的服务器IP>:{port}/")
             logging.info(f"👉 电视/播放器订阅文件夹挂在在当前服务端口下，直接访问: http://<您的服务器IP>:{port}/output/<输出文件名>")
             httpd.serve_forever()
     except Exception as e:
