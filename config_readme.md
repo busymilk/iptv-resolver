@@ -12,12 +12,10 @@
 {
   "dns_servers": [],
   "use_doh": true,
-  "mode": "prefer-ipv6",
   "update_interval_hours": 12,
   "keep_unresolved": false,
   "ip_speed_test": true,
   "workers": 50,
-  "web_port": 8080,
   "sources": [
     {
       "name": "zilong7728_best_sorted",
@@ -67,7 +65,7 @@
 
 | 参数名 | 默认值 | 推荐配置 | 参数释义与使用建议 |
 | :--- | :--- | :--- | :--- |
-| **`web_port`** | `8080` | `8080` (推荐) | **局域网共享与配置后台端口**。<br>- 若设为 `0`：不开启任何 Web 服务。<br>- 若设为大于 `0` 的端口数：<br>1. **配置后台**：浏览器打开 `http://<服务器IP>:{port}/admin` 即可访问后台管理界面。<br>2. **电视订阅**：电视端填入 `http://<服务器IP>:{port}/output/<文件名>` (如 `http://192.168.1.100:8080/best_sorted_resolved.m3u`) 极速拉取播放。 |
+| **`web_port`** | `8080` | `8080` (可选) | **局域网共享与配置后台端口**。<br>- **可选配置**：若不配置此项，系统**缺省默认开启 8080 端口**提供 Web 共享及可视化后台服务。<br>- 若设为 `0`：则彻底关闭 Web 服务。<br>- 若设为大于 `0` 的端口数：<br>1. **配置后台**：浏览器打开 `http://<服务器IP>:{port}/admin` 即可访问后台管理界面。<br>2. **电视订阅**：电视端填入 `http://<服务器IP>:{port}/output/<文件名>` (如 `http://192.168.1.100:8080/best_sorted_resolved.m3u`) 极速拉取播放。 |
 
 ### 2. 精细化数据源局部策略 (Per-Source Resolution Settings)
 
@@ -94,12 +92,10 @@
 {
   "dns_servers": [],
   "use_doh": true,
-  "mode": "prefer-ipv6",
   "update_interval_hours": 12,
   "keep_unresolved": false,
   "ip_speed_test": true,
   "workers": 50,
-  "web_port": 8080,
   "sources": [
     {
       "name": "cctv_dual_stack",

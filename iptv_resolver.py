@@ -732,7 +732,7 @@ def main():
     run_once(GLOBAL_CONFIG_PATH)
     
     interval = global_config.get("update_interval_hours", 0)
-    web_port = global_config.get("web_port", 0)
+    web_port = global_config.get("web_port", 8080)
     
     if interval > 0:
         if web_port > 0:

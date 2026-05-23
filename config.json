@@ -1,12 +1,10 @@
 {
   "dns_servers": [],
   "use_doh": true,
-  "mode": "prefer-ipv6",
   "update_interval_hours": 0,
   "keep_unresolved": false,
   "ip_speed_test": true,
   "workers": 20,
-  "web_port": 8080,
   "sources": [
     {
       "name": "zilong7728_best_sorted",
