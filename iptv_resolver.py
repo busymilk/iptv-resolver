@@ -13,6 +13,7 @@ import threading
 import subprocess
 import ipaddress
 import socketserver
+import copy
 from http.server import SimpleHTTPRequestHandler
 from urllib.parse import urlparse, urlunparse, parse_qs
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -121,6 +122,95 @@ def test_ip_speed(ip, port, timeout=1.2):
         return cost
     except Exception:
         return float('inf')
+
+def test_media_stream(url, timeout=3.0):
+    """
+    通过实际拉取流媒体的首个数据包，测试链接是否能正常播放。
+    支持 HTTP/HTTPS 协议，对其他协议（如 RTSP/RTMP）退回到 TCP 端口连接测试。
+    返回 (is_playable, duration)
+    """
+    parsed = urlparse(url)
+    scheme = parsed.scheme.lower()
+    
+    if scheme in ['http', 'https']:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+        start_time = time.perf_counter()
+        try:
+            # stream=True 避免下载整个视频流文件，只建立连接和获取头部
+            # allow_redirects=True 允许自动处理重定向
+            response = http_session.get(url, headers=headers, stream=True, timeout=timeout, allow_redirects=True)
+            
+            # 状态码为 4xx/5xx 等，说明播放不了（如 403 Forbidden, 404 Not Found）
+            if response.status_code >= 400:
+                return False, float('inf')
+                
+            # 尝试从流中读取首个数据块以验证流是否可以顺利吐出数据且未卡死
+            has_data = False
+            try:
+                for chunk in response.iter_content(chunk_size=512):
+                    if chunk:
+                        has_data = True
+                        break
+            except Exception:
+                # 读取首字节超时或发生其它错误
+                return False, float('inf')
+            finally:
+                response.close()
+                
+            if not has_data:
+                return False, float('inf')
+                
+            duration = time.perf_counter() - start_time
+            return True, duration
+        except Exception as e:
+            logging.debug(f"流媒体测试失败 {url}: {e}")
+            return False, float('inf')
+    else:
+        # 对于非 HTTP/HTTPS 协议，如 rtsp/rtmp，尝试进行 TCP 握手测速保底
+        domain = parsed.hostname
+        port = parsed.port
+        if not port:
+            if scheme == 'rtsp':
+                port = 554
+            elif scheme == 'rtmp':
+                port = 1935
+            else:
+                port = 80
+        
+        if domain:
+            af = socket.AF_INET6 if ':' in domain else socket.AF_INET
+            start_time = time.perf_counter()
+            try:
+                s = socket.socket(af, socket.SOCK_STREAM)
+                s.settimeout(timeout)
+                s.connect((domain, port))
+                s.close()
+                duration = time.perf_counter() - start_time
+                return True, duration
+            except Exception:
+                return False, float('inf')
+        return False, float('inf')
+
+def resolve_only_all_ips(domain_key, dns_servers, mode):
+    """
+    智能解析域名，返回该域名对应的所有 IP 列表（不测速）: (domain_key, candidates)
+    candidates 格式为 [(ip, 'v6'/'v4'), ...]
+    """
+    domain, port, scheme = domain_key
+    ips_v6, ips_v4 = resolve_domain_all(domain, dns_servers, mode)
+    candidates = []
+    
+    # 按照模式策略组装 IP 列表，保持与 IP 优选测速相似的双栈偏好
+    if mode in ["prefer-ipv6", "ipv6-only"]:
+        for ip in ips_v6:
+            candidates.append((ip, 'v6'))
+    if mode in ["prefer-ipv6", "ipv4-only"] or (mode == "prefer-ipv6" and not ips_v6):
+        for ip in ips_v4:
+            candidates.append((ip, 'v4'))
+            
+    return domain_key, candidates
 
 def resolve_domain_doh(domain, doh_url, mode="prefer-ipv6"):
     """
@@ -459,88 +549,225 @@ def process_source(source_cfg, global_cfg):
     dns_servers = global_cfg.get("dns_servers", [])
     do_speed_test = global_cfg.get("ip_speed_test", True)
     
-    dns_cache = {} # (domain, port, scheme) -> (ip, ip_type, speed_cost)
+    # 新增流媒体实际播放测试开关与超时
+    do_media_test = global_cfg.get("media_stream_test", True)
+    media_timeout = global_cfg.get("media_stream_timeout", 3.0)
     
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        future_to_key = {
-            executor.submit(resolve_and_select_best, key, dns_servers, mode, do_speed_test): key 
-            for key in domain_keys_to_resolve
-        }
-        for future in as_completed(future_to_key):
-            key = future_to_key[future]
-            try:
-                ip, ip_type, speed_cost = future.result()
-                if ip:
-                    dns_cache[key] = (ip, ip_type, speed_cost)
-                    logging.debug(f"连接优化成功: {key[0]}:{key[1]} -> {ip} ({ip_type})，延迟: {speed_cost:.4f}s")
-                else:
+    dns_cache = {} # (domain, port, scheme) -> (ip, ip_type, speed_cost)
+    dns_candidates_cache = {} # (domain, port, scheme) -> [(ip, ip_type), ...]
+    
+    if do_media_test:
+        logging.info("已启用流媒体实际播放拉流测试，开始并发解析域名获取所有 IP 候选列表...")
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_to_key = {
+                executor.submit(resolve_only_all_ips, key, dns_servers, mode): key 
+                for key in domain_keys_to_resolve
+            }
+            for future in as_completed(future_to_key):
+                key = future_to_key[future]
+                try:
+                    domain_key, candidates = future.result()
+                    dns_candidates_cache[key] = candidates
+                    logging.debug(f"域名解析成功: {key[0]} -> 找到 {len(candidates)} 个候选 IP")
+                except Exception as e:
+                    dns_candidates_cache[key] = []
+                    logging.error(f"解析域名 {key[0]} 时发生异常: {e}")
+    else:
+        logging.info("使用原本 TCP 握手测速挑选单 IP 模式...")
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_to_key = {
+                executor.submit(resolve_and_select_best, key, dns_servers, mode, do_speed_test): key 
+                for key in domain_keys_to_resolve
+            }
+            for future in as_completed(future_to_key):
+                key = future_to_key[future]
+                try:
+                    ip, ip_type, speed_cost = future.result()
+                    if ip:
+                        dns_cache[key] = (ip, ip_type, speed_cost)
+                        logging.debug(f"连接优化成功: {key[0]}:{key[1]} -> {ip} ({ip_type})，延迟: {speed_cost:.4f}s")
+                    else:
+                        dns_cache[key] = (None, None, float('inf'))
+                        logging.debug(f"连接优化失败: {key[0]}:{key[1]}")
+                except Exception as e:
                     dns_cache[key] = (None, None, float('inf'))
-                    logging.debug(f"连接优化失败: {key[0]}:{key[1]}")
-            except Exception as e:
-                dns_cache[key] = (None, None, float('inf'))
-                logging.error(f"优化连接 {key[0]} 时发生异常: {e}")
-                
-    # 3. 双层优化与同名电视频道测速重新排序！
+                    logging.error(f"优化连接 {key[0]} 时发生异常: {e}")
+                    
+    # 3. 双层优化与测试替换！
     keep_unresolved = global_cfg.get("keep_unresolved", False)
     
     # 我们创建一个列表，只保存可通行的 channel elements 或者是元数据 elements
     processed_elements = []
     
     # 为同名电视频道做聚合准备
-    # 键：电视频道名；值：[channel_element_dict, ...]
     channels_by_title = {}
     
-    for el in elements:
-        if el["type"] == "meta":
-            processed_elements.append(el)
-        elif el["type"] == "channel":
-            try:
-                parsed = urlparse(el["url"])
-                domain = parsed.hostname
-                port = parsed.port
-                scheme = parsed.scheme
-                
-                key = (domain, port, scheme)
-                ip, ip_type, speed_cost = dns_cache.get(key, (None, None, float('inf')))
-                
-                if ip:
-                    # 替换 IP 得到最新的真实 URL
-                    new_url = reconstruct_url(el["url"], ip, ip_type)
-                    el["url"] = new_url
-                    el["speed_cost"] = speed_cost
-                    el["resolved"] = True
-                    el["ip_type"] = ip_type
-                else:
-                    el["speed_cost"] = float('inf')
-                    el["resolved"] = False
+    # 流媒体拉流测试下的频道分发与去重测试
+    if do_media_test:
+        logging.info("正在为所有候选 IP 生成独立的播放链接并进行去重测试...")
+        
+        # 1) 为每一个 channel 的每一个解析到的候选 IP 生成全新的待测链接
+        unique_urls_to_test = set()
+        
+        # 临时存储每个 channel 对应的所有候选 IP 生成的电视频道元素字典列表
+        # 格式: el_index -> [candidate_el1, candidate_el2, ...]
+        channel_candidates_map = {}
+        
+        for idx, el in enumerate(elements):
+            if el["type"] == "meta":
+                processed_elements.append(el)
+            elif el["type"] == "channel":
+                channel_candidates_map[idx] = []
+                try:
+                    parsed = urlparse(el["url"])
+                    domain = parsed.hostname
+                    port = parsed.port
+                    scheme = parsed.scheme
                     
-                # 确定电视频道名，用以同名聚合
-                channel_title = ""
-                if format_type == 'm3u':
-                    if ',' in el["info"]:
-                        channel_title = el["info"].rsplit(',', 1)[1].strip()
-                    if not channel_title:
-                        channel_title = el["info"]
-                else: # txt
-                    channel_title = el["name"]
+                    key = (domain, port, scheme)
+                    candidates = dns_candidates_cache.get(key, [])
                     
-                el["channel_title"] = channel_title
+                    # 确定电视频道名，用以同名聚合
+                    channel_title = ""
+                    if format_type == 'm3u':
+                        if ',' in el["info"]:
+                            channel_title = el["info"].rsplit(',', 1)[1].strip()
+                        if not channel_title:
+                            channel_title = el["info"]
+                    else: # txt
+                        channel_title = el["name"]
+                    el["channel_title"] = channel_title
+                    
+                    if candidates:
+                        for ip, ip_type in candidates:
+                            new_url = reconstruct_url(el["url"], ip, ip_type)
+                            # 深度复制原始 channel 字典，避免互相污染
+                            candidate_el = copy.deepcopy(el)
+                            candidate_el["url"] = new_url
+                            candidate_el["resolved"] = True
+                            candidate_el["ip_type"] = ip_type
+                            candidate_el["tested_ip"] = ip
+                            channel_candidates_map[idx].append(candidate_el)
+                            unique_urls_to_test.add(new_url)
+                    else:
+                        # 域名解析不到 IP
+                        el["resolved"] = False
+                        el["speed_cost"] = float('inf')
+                        # 如果 keep_unresolved 为 True，我们将原始 url 作为一个测试源
+                        if keep_unresolved:
+                            candidate_el = copy.deepcopy(el)
+                            channel_candidates_map[idx].append(candidate_el)
+                            unique_urls_to_test.add(el["url"])
+                except Exception as e:
+                    logging.error(f"构建候选播放链接时发生异常: {e}")
+                    
+        logging.info(f"生成了 {len(unique_urls_to_test)} 个唯一的候选播放链接，开始高并发流媒体测试...")
+        
+        # 2) 使用线程池并发测试这些唯一的播放 URL
+        playable_cache = {} # url -> (is_playable, duration)
+        
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_to_url = {
+                executor.submit(test_media_stream, url, media_timeout): url
+                for url in unique_urls_to_test
+            }
+            tested_count = 0
+            for future in as_completed(future_to_url):
+                url = future_to_url[future]
+                tested_count += 1
+                try:
+                    is_playable, duration = future.result()
+                    playable_cache[url] = (is_playable, duration)
+                    if is_playable:
+                        logging.debug(f"[{tested_count}/{len(unique_urls_to_test)}] 播放测试成功: {url}，首包延迟: {duration:.4f}s")
+                    else:
+                        logging.debug(f"[{tested_count}/{len(unique_urls_to_test)}] 播放测试失败: {url}")
+                except Exception as e:
+                    playable_cache[url] = (False, float('inf'))
+                    logging.error(f"测试链接 {url} 发生未捕获异常: {e}")
+                    
+        # 3) 根据测试结果，分发并过滤
+        resolved_count_total = 0
+        for idx, el in enumerate(elements):
+            if el["type"] == "channel":
+                candidate_els = channel_candidates_map.get(idx, [])
+                playable_candidates = []
                 
-                # 过滤策略判定：
-                # 如果解析/测速彻底失败，且 keep_unresolved 为 false，则直接过滤抛弃
-                if not el["resolved"] and not keep_unresolved:
-                    logging.debug(f"频道 [{channel_title}] 所有 IP 均不可达，已被丢弃")
-                    continue
+                for cand_el in candidate_els:
+                    cand_url = cand_el["url"]
+                    is_playable, duration = playable_cache.get(cand_url, (False, float('inf')))
                     
+                    if is_playable:
+                        cand_el["media_playable"] = True
+                        cand_el["speed_cost"] = duration
+                        playable_candidates.append(cand_el)
+                    else:
+                        cand_el["media_playable"] = False
+                        cand_el["speed_cost"] = float('inf')
+                        # 如果 keep_unresolved 且解析失败或无法播放，仍然保留以备用
+                        if keep_unresolved:
+                            playable_candidates.append(cand_el)
+                            
                 # 放入同名聚合容器
-                if channel_title not in channels_by_title:
-                    channels_by_title[channel_title] = []
-                channels_by_title[channel_title].append(el)
-                
-            except Exception as e:
-                logging.error(f"处理频道测速替换发生异常: {e}")
-                if keep_unresolved:
-                    processed_elements.append(el)
+                channel_title = el["channel_title"]
+                if playable_candidates:
+                    if channel_title not in channels_by_title:
+                        channels_by_title[channel_title] = []
+                    for playable_el in playable_candidates:
+                        channels_by_title[channel_title].append(playable_el)
+                        resolved_count_total += 1
+                else:
+                    logging.debug(f"频道 [{channel_title}] 所有备选 IP 播放测试均失败，已被丢弃")
+                    
+        logging.info(f"流媒体并发测试完毕。共保留了 {resolved_count_total} 个有效的播放源。")
+        
+    else:
+        # 原本的同步过滤与同名聚合逻辑
+        for el in elements:
+            if el["type"] == "meta":
+                processed_elements.append(el)
+            elif el["type"] == "channel":
+                try:
+                    parsed = urlparse(el["url"])
+                    domain = parsed.hostname
+                    port = parsed.port
+                    scheme = parsed.scheme
+                    
+                    key = (domain, port, scheme)
+                    ip, ip_type, speed_cost = dns_cache.get(key, (None, None, float('inf')))
+                    
+                    if ip:
+                        new_url = reconstruct_url(el["url"], ip, ip_type)
+                        el["url"] = new_url
+                        el["speed_cost"] = speed_cost
+                        el["resolved"] = True
+                        el["ip_type"] = ip_type
+                    else:
+                        el["speed_cost"] = float('inf')
+                        el["resolved"] = False
+                        
+                    channel_title = ""
+                    if format_type == 'm3u':
+                        if ',' in el["info"]:
+                            channel_title = el["info"].rsplit(',', 1)[1].strip()
+                        if not channel_title:
+                            channel_title = el["info"]
+                    else:
+                        channel_title = el["name"]
+                        
+                    el["channel_title"] = channel_title
+                    
+                    if not el["resolved"] and not keep_unresolved:
+                        logging.debug(f"频道 [{channel_title}] 所有 IP 均不可达，已被丢弃")
+                        continue
+                        
+                    if channel_title not in channels_by_title:
+                        channels_by_title[channel_title] = []
+                    channels_by_title[channel_title].append(el)
+                except Exception as e:
+                    logging.error(f"处理频道测速替换发生异常: {e}")
+                    if keep_unresolved:
+                        processed_elements.append(el)
                     
     # 4. 同名电视频道测速重新排序！
     # 对聚合好的每个同名电视频道的多个链接，根据测速延迟（speed_cost）升序排序（从小到大，越快越靠前）！

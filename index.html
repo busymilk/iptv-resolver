@@ -538,6 +538,23 @@
                     </div>
                 </div>
 
+                <div class="grid-2">
+                    <div class="switch-group" style="height: calc(100% - 10px); display: flex; align-items: center; margin-top: 15px;">
+                        <div class="switch-info">
+                            <h4>流媒体播放可用性测试 (拉流测试)</h4>
+                            <p>高并发拉取流媒体首包，100% 过滤 403、404 等无法播放的坏源</p>
+                        </div>
+                        <label class="switch">
+                            <input type="checkbox" id="media_stream_test" name="media_stream_test" checked>
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                    <div class="form-group">
+                        <label for="media_stream_timeout">流媒体测试超时限制 (秒)</label>
+                        <input type="number" id="media_stream_timeout" name="media_stream_timeout" min="1" max="15" step="0.5" placeholder="默认 3.0">
+                    </div>
+                </div>
+
                 <!-- 智能 DNS 配置 -->
                 <div class="form-group" style="margin-top: 10px;">
                     <label for="dns_servers">智能 DNS / DoH 加密解析服务器 (以逗号隔开，支持普通 IP 和 https:// 开头的 DoH 链接)</label>
@@ -588,8 +605,8 @@
     <!-- Loading 遮罩 -->
     <div class="overlay" id="overlay">
         <div class="spinner"></div>
-        <h2 style="font-weight: 600;">正在云端进行高并发测速与解析排序...</h2>
-        <p style="color: var(--text-muted); font-size: 0.9rem;">请耐心等待，这通常只需要 10-15 秒钟</p>
+        <h2 style="font-weight: 600;">正在进行高并发解析、流媒体播放拉流测试与测速排序...</h2>
+        <p style="color: var(--text-muted); font-size: 0.9rem;">请耐心等待，为了确保 100% 均能正常播放，流媒体并发测试通常需要 10-25 秒钟</p>
     </div>
 
     <script>
@@ -720,6 +737,8 @@
                     document.getElementById('update_interval_hours').value = config.update_interval_hours !== undefined ? config.update_interval_hours : 12;
                     document.getElementById('workers').value = config.workers || 50;
                     document.getElementById('ip_speed_test').checked = config.ip_speed_test !== false;
+                    document.getElementById('media_stream_test').checked = config.media_stream_test !== false;
+                    document.getElementById('media_stream_timeout').value = config.media_stream_timeout !== undefined ? config.media_stream_timeout : 3.0;
                     document.getElementById('dns_servers').value = config.dns_servers ? config.dns_servers.join(', ') : '';
                     
                     // 清空原有行并填充 sources
@@ -783,6 +802,8 @@
                 update_interval_hours: parseInt(document.getElementById('update_interval_hours').value) || 0,
                 keep_unresolved: false, // 强制默认为 false 过滤死链
                 ip_speed_test: document.getElementById('ip_speed_test').checked,
+                media_stream_test: document.getElementById('media_stream_test').checked,
+                media_stream_timeout: parseFloat(document.getElementById('media_stream_timeout').value) || 3.0,
                 workers: parseInt(document.getElementById('workers').value) || 50,
                 sources: sources
             };

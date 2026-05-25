@@ -3,6 +3,8 @@
   "update_interval_hours": 0,
   "keep_unresolved": false,
   "ip_speed_test": true,
+  "media_stream_test": true,
+  "media_stream_timeout": 3.0,
   "workers": 20,
   "sources": [
     {

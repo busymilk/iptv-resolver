@@ -15,6 +15,8 @@
   "update_interval_hours": 12,
   "keep_unresolved": false,
   "ip_speed_test": true,
+  "media_stream_test": true,
+  "media_stream_timeout": 3.0,
   "workers": 50,
   "sources": [
     {
@@ -81,7 +83,9 @@
 | :--- | :--- | :--- | :--- |
 | **`dns_servers`** | `[]` (留空) | `[]` (防劫持保底) | **智能 DNS / DoH 服务器列表**。<br>- **可选配置**：若不写此参数或留空，系统**缺省默认并行启用阿里云与腾讯云的公网 DoH 解析**，100% 避开 Fake-IP 代理污染。<br>- **高度灵活**：支持普通 DNS IP（如 `223.5.5.5`）与 **https:// 开头的加密 DoH 服务器**（如 `https://dns.alidns.com/resolve`）混配！ |
 | **`ip_speed_test`**| `true` | `true` | **IP 优选与连接测速开关**。<br>多 IP 候选集会在您的本地网络发起多线程 TCP 连接延迟测速，自动挑选延迟最低、最稳定的那个 IP 替换入播放 URL。 |
-| **`keep_unresolved`** | `false` | `false` | **解析/测速失败策略**。<br>设为 `false`（推荐）时，解析失败或测速全部超时的无效频道会被自动过滤，确保播放列表 100% 极速可用。 |
+| **`media_stream_test`**| `true` | `true` | **流媒体实际播放拉流测试**。<br>- **可选配置**：开启后（推荐），会对同一个域名解析出的所有候选 IP 分别生成播放 URL 并进行实际拉流测试。<br>- 100% 过滤掉返回 403、404、5xx 或者连接成功但无法拉取流数据的无效源。<br>- 对于可正常播放的多个 IP 备选源，将以实际的秒开响应时间（Time to First Byte, TTFB）作为测速延迟，在同名电视台合并中升序重排序，最快的排在最前面，并保留其它可播 IP 作为多源备份！ |
+| **`media_stream_timeout`**| `3.0` | `3.0` | **流媒体拉流测试超时时间（秒）**。<br>如果在此超时时间内无法建立连接并拉取到首包数据，则判定为该链接无法正常播放并进行过滤（当 `keep_unresolved` 为 `false` 时）。 |
+| **`keep_unresolved`** | `false` | `false` | **解析/测速/播放测试失败策略**。<br>设为 `false`（推荐）时，解析失败、测速超速或无法正常拉流播放的无效频道会被自动过滤抛弃，确保播放列表 100% 正常播放且秒开秒连。 |
 
 ---
 
