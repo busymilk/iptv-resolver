@@ -206,7 +206,7 @@ def resolve_only_all_ips(domain_key, dns_servers, mode):
     if mode in ["prefer-ipv6", "ipv6-only"]:
         for ip in ips_v6:
             candidates.append((ip, 'v6'))
-    if mode in ["prefer-ipv6", "ipv4-only"] or (mode == "prefer-ipv6" and not ips_v6):
+    if mode in ["prefer-ipv6", "ipv4-only"]:
         for ip in ips_v4:
             candidates.append((ip, 'v4'))
             
@@ -691,7 +691,10 @@ def process_source(source_cfg, global_cfg):
         for idx, el in enumerate(elements):
             if el["type"] == "channel":
                 candidate_els = channel_candidates_map.get(idx, [])
-                playable_candidates = []
+                
+                # 分别收集播放正常的 v6 和 v4
+                playable_v6 = []
+                playable_v4 = []
                 
                 for cand_el in candidate_els:
                     cand_url = cand_el["url"]
@@ -700,13 +703,34 @@ def process_source(source_cfg, global_cfg):
                     if is_playable:
                         cand_el["media_playable"] = True
                         cand_el["speed_cost"] = duration
-                        playable_candidates.append(cand_el)
+                        if cand_el.get("ip_type") == 'v6':
+                            playable_v6.append(cand_el)
+                        else:
+                            playable_v4.append(cand_el)
                     else:
                         cand_el["media_playable"] = False
                         cand_el["speed_cost"] = float('inf')
                         # 如果 keep_unresolved 且解析失败或无法播放，仍然保留以备用
                         if keep_unresolved:
-                            playable_candidates.append(cand_el)
+                            if cand_el.get("ip_type") == 'v6':
+                                playable_v6.append(cand_el)
+                            else:
+                                playable_v4.append(cand_el)
+                                
+                # 根据不同策略分发和限制过滤
+                playable_candidates = []
+                if mode == "prefer-ipv6":
+                    # 1. 优先保留所有能通的 v6
+                    playable_candidates.extend(playable_v6)
+                    # 2. 对所有能通的 v4 进行测速升序排序，只保留前 2 个速度最快的 v4 地址作为备用防线！
+                    playable_v4.sort(key=lambda x: x["speed_cost"])
+                    playable_candidates.extend(playable_v4[:2])
+                elif mode == "ipv6-only":
+                    # 只保留 v6
+                    playable_candidates.extend(playable_v6)
+                elif mode == "ipv4-only":
+                    # 只保留 v4
+                    playable_candidates.extend(playable_v4)
                             
                 # 放入同名聚合容器
                 channel_title = el["channel_title"]
