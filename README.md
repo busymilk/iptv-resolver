@@ -61,6 +61,7 @@
   "ip_speed_test": true,
   "media_stream_test": true,
   "media_stream_timeout": 3.0,
+  "max_channels_per_title": 3,
   "workers": 50,
   "sources": [
     {

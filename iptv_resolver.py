@@ -821,6 +821,12 @@ def process_source(source_cfg, global_cfg):
                 # ⭐️ 核心逻辑：根据 speed_cost（TCP 建立延迟，秒）对多源进行重新排序！
                 source_links.sort(key=lambda x: x.get("speed_cost", float('inf')))
                 
+                # 剔除速度慢的，限制同一个同名电视频道最大保留的可用播放源上限
+                max_backups = global_cfg.get("max_channels_per_title", 3)
+                if len(source_links) > max_backups:
+                    logging.debug(f"频道 [{channel_title}] 共有 {len(source_links)} 个可用源，已剔除 {len(source_links) - max_backups} 个速度慢的备选源，保留最快前 {max_backups} 个")
+                    source_links = source_links[:max_backups]
+                
                 # 写入排序后的播放链接
                 for link_el in source_links:
                     sorted_channels_list.append(link_el)

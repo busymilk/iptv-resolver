@@ -555,6 +555,16 @@
                     </div>
                 </div>
 
+                <div class="grid-2">
+                    <div class="form-group">
+                        <label for="max_channels_per_title">单电视台最大保留可用源数 (同名频道/多IP数)</label>
+                        <input type="number" id="max_channels_per_title" name="max_channels_per_title" min="1" max="30" placeholder="默认 3，超出的慢源将被自动剔除">
+                    </div>
+                    <div class="form-group" style="visibility: hidden;">
+                        <!-- 占位对齐 -->
+                    </div>
+                </div>
+
                 <!-- 智能 DNS 配置 -->
                 <div class="form-group" style="margin-top: 10px;">
                     <label for="dns_servers">智能 DNS / DoH 加密解析服务器 (以逗号隔开，支持普通 IP 和 https:// 开头的 DoH 链接)</label>
@@ -739,6 +749,7 @@
                     document.getElementById('ip_speed_test').checked = config.ip_speed_test !== false;
                     document.getElementById('media_stream_test').checked = config.media_stream_test !== false;
                     document.getElementById('media_stream_timeout').value = config.media_stream_timeout !== undefined ? config.media_stream_timeout : 3.0;
+                    document.getElementById('max_channels_per_title').value = config.max_channels_per_title !== undefined ? config.max_channels_per_title : 3;
                     document.getElementById('dns_servers').value = config.dns_servers ? config.dns_servers.join(', ') : '';
                     
                     // 清空原有行并填充 sources
@@ -804,6 +815,7 @@
                 ip_speed_test: document.getElementById('ip_speed_test').checked,
                 media_stream_test: document.getElementById('media_stream_test').checked,
                 media_stream_timeout: parseFloat(document.getElementById('media_stream_timeout').value) || 3.0,
+                max_channels_per_title: parseInt(document.getElementById('max_channels_per_title').value) || 3,
                 workers: parseInt(document.getElementById('workers').value) || 50,
                 sources: sources
             };
