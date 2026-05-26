@@ -15,7 +15,7 @@ import ipaddress
 import socketserver
 import copy
 from http.server import SimpleHTTPRequestHandler
-from urllib.parse import urlparse, urlunparse, parse_qs
+from urllib.parse import urlparse, urlunparse, parse_qs, quote
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # 自动补齐依赖的机制
@@ -60,6 +60,7 @@ logging.basicConfig(
     ]
 )
 
+
 # 确保依赖已加载
 ensure_dependencies()
 import requests
@@ -67,6 +68,31 @@ try:
     import dns.resolver
 except ImportError:
     pass
+
+# ------------------ 线程安全的域名-IP劫持机制 ------------------
+import urllib3.util.connection as urllib3_connection
+
+# 线程局部变量，用于存储每个线程独立的“域名 -> IP”映射
+proxy_thread_local = threading.local()
+_orig_create_connection = urllib3_connection.create_connection
+
+def patched_create_connection(address, *args, **kwargs):
+    host, port = address
+    # 检查当前线程是否有被强制劫持的 IP 映射
+    forced_mappings = getattr(proxy_thread_local, 'forced_mappings', None)
+    if forced_mappings and host in forced_mappings:
+        forced_ip = forced_mappings[host]
+        # 对于 IPv6 在 socket 层是不需要加方括号的，底层 socket 会自动识别
+        # 但如果是带方括号的 IPv6 字符串格式，我们主动将其剥离
+        if forced_ip.startswith('[') and forced_ip.endswith(']'):
+            forced_ip = forced_ip[1:-1]
+        return _orig_create_connection((forced_ip, port), *args, **kwargs)
+    return _orig_create_connection(address, *args, **kwargs)
+
+# 全局替换连接建立方法
+urllib3_connection.create_connection = patched_create_connection
+# -------------------------------------------------------------
+
 
 # 全局变量以支持 Web 动态热重载
 GLOBAL_CONFIG_PATH = "config.json"
@@ -510,6 +536,11 @@ def reconstruct_url(url, ip, ip_type):
     new_parsed = parsed._replace(netloc=new_netloc)
     return urlunparse(new_parsed)
 
+def build_proxy_url(original_url, ip):
+    """构建代理中转播放链接，将播放基准地址设为占位符 __PROXY_BASE__"""
+    encoded_url = quote(original_url, safe="")
+    return f"http://__PROXY_BASE__/proxy?url={encoded_url}&ip={ip}"
+
 def process_source(source_cfg, global_cfg):
     """处理单个数据源：下载 -> 解析域名 -> 测速优选 -> 重新排序 -> 写入本地"""
     name = source_cfg.get("name")
@@ -647,6 +678,7 @@ def process_source(source_cfg, global_cfg):
                             candidate_el["resolved"] = True
                             candidate_el["ip_type"] = ip_type
                             candidate_el["tested_ip"] = ip
+                            candidate_el["original_url"] = el["url"]
                             channel_candidates_map[idx].append(candidate_el)
                             unique_urls_to_test.add(new_url)
                     else:
@@ -762,10 +794,12 @@ def process_source(source_cfg, global_cfg):
                     
                     if ip:
                         new_url = reconstruct_url(el["url"], ip, ip_type)
+                        el["original_url"] = el["url"]
                         el["url"] = new_url
                         el["speed_cost"] = speed_cost
                         el["resolved"] = True
                         el["ip_type"] = ip_type
+                        el["tested_ip"] = ip
                     else:
                         el["speed_cost"] = float('inf')
                         el["resolved"] = False
@@ -845,17 +879,24 @@ def process_source(source_cfg, global_cfg):
                 f.write(el["content"] + "\n")
                 
         # 写入重新排序、精细优选后的电视频道链接行
+        web_proxy = global_cfg.get("web_proxy", False)
         for el in sorted_channels_list:
             resolved_count += 1
+            url_to_write = el["url"]
+            if web_proxy and el.get("resolved") and el.get("tested_ip"):
+                orig_url = el.get("original_url") or el["url"]
+                ip = el["tested_ip"]
+                url_to_write = build_proxy_url(orig_url, ip)
+                
             if format_type == 'm3u':
                 # 对重排后的电视台行，可以在逗号后的频道名上优雅加上 [延迟评级] 或是保持原本
                 # 这里为了极致的兼容性与原本风格一致，保持原 info 内容写入
                 f.write(el["info"] + "\n")
                 for extra_meta in el.get("extra", []):
                     f.write(extra_meta + "\n")
-                f.write(el["url"] + "\n")
+                f.write(url_to_write + "\n")
             else: # txt
-                f.write(f"{el['name']},{el['url']}\n")
+                f.write(f"{el['name']},{url_to_write}\n")
                 
     logging.info(f"数据源 [{name}] 处理完毕。")
     logging.info(f"成功测速排序并保留频道链接: {resolved_count} 个")
@@ -935,6 +976,112 @@ class WebConfigHandler(SimpleHTTPRequestHandler):
             else:
                 log_content = "暂无系统运行日志记录。"
             self.wfile.write(log_content.encode('utf-8'))
+            return
+
+        # ==================== 新增：订阅源动态 Host 自适应替换 ====================
+        if self.path.startswith("/output/") and (self.path.endswith(".m3u") or self.path.endswith(".txt")):
+            try:
+                # 提取纯物理路径，规避 Query 参数干扰
+                parsed_path = urlparse(self.path)
+                local_path = parsed_path.path.lstrip("/")
+                
+                if os.path.exists(local_path) and os.path.isfile(local_path):
+                    with open(local_path, "r", encoding="utf-8") as f:
+                        content = f.read()
+                    
+                    # 获取当前请求的 Host 头（即电视机请求的真实 IP:Port）
+                    host = self.headers.get("Host")
+                    if not host:
+                        host = f"127.0.0.1:{self.server.server_address[1]}"
+                    
+                    # 动态替换 __PROXY_BASE__ 占位符
+                    replaced_content = content.replace("__PROXY_BASE__", host)
+                    
+                    self.send_response(200)
+                    if local_path.endswith(".m3u"):
+                        self.send_header("Content-Type", "application/x-mpegurl; charset=utf-8")
+                    else:
+                        self.send_header("Content-Type", "text/plain; charset=utf-8")
+                    self.end_headers()
+                    self.wfile.write(replaced_content.encode("utf-8"))
+                    return
+            except Exception as e:
+                logging.error(f"[Web Web] 动态替换订阅列表失败: {e}")
+                self.send_response(500)
+                self.end_headers()
+                self.wfile.write(f"Internal Server Error: {e}".encode("utf-8"))
+                return
+
+        # ==================== 新增：高并发流媒体中转代理 ====================
+        if self.path.startswith("/proxy"):
+            target_host = ""
+            try:
+                parsed_url = urlparse(self.path)
+                params = parse_qs(parsed_url.query)
+                
+                target_url = params.get("url", [None])[0]
+                forced_ip = params.get("ip", [None])[0]
+                
+                if not target_url or not forced_ip:
+                    self.send_response(400)
+                    self.end_headers()
+                    self.wfile.write(b"Missing url or ip parameter.")
+                    return
+                
+                parsed_target = urlparse(target_url)
+                target_host = parsed_target.hostname
+                
+                # 1. 线程局部变量中注入劫持映射，保障 100% 线程安全和并发独立性
+                if not hasattr(proxy_thread_local, 'forced_mappings'):
+                    proxy_thread_local.forced_mappings = {}
+                proxy_thread_local.forced_mappings[target_host] = forced_ip
+                
+                # 2. 构造透传的 HTTP 请求头部
+                headers = {
+                    "User-Agent": self.headers.get("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"),
+                    "Accept": self.headers.get("Accept", "*/*"),
+                    "Connection": "keep-alive"
+                }
+                for header_key in ["Authorization", "Cookie", "Pragma", "Cache-Control"]:
+                    if header_key in self.headers:
+                        headers[header_key] = self.headers[header_key]
+                
+                # 3. 发送请求。URL 依然使用原始域名，TLS SNI 和 HTTP Host 均完美匹配！
+                # 劫持补丁只会在当前这个代理线程中，将物理 TCP 连接强制定向到 forced_ip，完全不干扰其他并发线程。
+                logging.info(f"[Proxy Thread] 并发代理播放: {target_url} -> 优选 IP: {forced_ip}")
+                
+                # 设置 verify=False 兼容直接以 IP 进行 TCP 连接的证书错误校验，stream=True 启用流式传输
+                response = requests.get(target_url, headers=headers, stream=True, verify=False, timeout=8.0)
+                
+                # 4. 透传服务器的 HTTP 响应状态码及头信息
+                self.send_response(response.status_code)
+                content_type = response.headers.get("Content-Type", "application/octet-stream")
+                self.send_header("Content-Type", content_type)
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                
+                # 5. 管道化流式透传（实时向电视播放器推送块数据）
+                try:
+                    for chunk in response.iter_content(chunk_size=64 * 1024):
+                        if chunk:
+                            self.wfile.write(chunk)
+                except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError, socket.error) as conn_err:
+                    logging.info(f"[Proxy Thread] 电视播放端已切台或关闭连接: {conn_err}")
+                finally:
+                    response.close()
+                    
+            except Exception as e:
+                logging.error(f"[Proxy Thread] 流媒体中转异常: {e}")
+                try:
+                    self.send_response(500)
+                    self.end_headers()
+                    self.wfile.write(f"Proxy internal error: {e}".encode("utf-8"))
+                except Exception:
+                    pass
+            finally:
+                # 6. 清理当前线程的劫持标记，杜绝内存泄漏
+                if target_host and hasattr(proxy_thread_local, 'forced_mappings'):
+                    proxy_thread_local.forced_mappings.pop(target_host, None)
             return
 
         # 其他静态文件，回退到标准处理器
